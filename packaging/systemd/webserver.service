@@ -1,0 +1,26 @@
+[Unit]
+Description=Webserver reverse proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/webserver
+ExecStart=/usr/local/bin/webserver run --config /etc/webserver/webserver.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=3s
+
+# Allow a non-root service user to bind to ports 80 and 443 once configured.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/www/webserver /var/log/webserver
+
+[Install]
+WantedBy=multi-user.target

@@ -94,10 +94,110 @@ Eine browserbasierte Verwaltungsoberflaeche ist als moegliche spaetere Erweiteru
 Voraussetzung ist eine aktuelle Rust-Toolchain.
 
 ```powershell
-cargo run
+cargo run -- init
+cargo run -- check
+cargo run -- run
 cargo test
 cargo clippy -- -D warnings
 ```
 
-Der Server implementiert noch keine Funktionalitaet. Der naechste Entwicklungsschritt ist die Projektstruktur und anschliessend ein minimaler HTTP/1.1-Listener.
+`init` erzeugt eine globale `webserver.toml`, eine erste Site unter `sites/localhost.conf` sowie einen passenden `public/index.html`-Startpunkt. `check` validiert die Datei, ohne einen Port zu belegen. `run` startet den Server auf der in der Konfiguration gesetzten Adresse.
 
+Die CLI kann Sites und Routen auch direkt verwalten:
+
+```powershell
+cargo run -- site-add --host example.test
+cargo run -- route-add --host example.test --path / --static ./public
+cargo run -- route-add --host example.test --path /api --upstream http://127.0.0.1:3000
+cargo run -- route-remove --host example.test --path /api
+```
+
+## Konfiguration fuer v0.1
+
+Die v0.1-Konfiguration liegt im TOML-Format vor und ist absichtlich wie nginx in globale und Site-spezifische Dateien getrennt. Jede reguläre Datei unter `sites/` wird als eine Site geladen; die Dateiendung ist frei waehbar, `.conf` ist die empfohlene Konvention.
+
+```toml
+# /etc/webserver/webserver.toml
+[server]
+bind = "0.0.0.0:80"
+upstream_timeout_secs = 30
+max_header_bytes = 32768
+max_body_bytes = 10485760
+```
+
+```toml
+# /etc/webserver/sites/example.conf
+host = "example.com"
+
+[[routes]]
+path_prefix = "/"
+kind = "static"
+root = "/var/www/webserver/example"
+
+[[routes]]
+path_prefix = "/api"
+kind = "proxy"
+upstream = "http://127.0.0.1:3000"
+```
+
+Eine Site-Datei besitzt einen Host und ihre Routen. Eine Route besitzt entweder `kind = "static"` mit `root` (und optional `index_file`) oder `kind = "proxy"` mit einem vollständigen HTTP-Upstream. Bei mehreren Treffern gewinnt die Route mit dem längsten passenden Pfadpraefix. Relative Static-Roots werden relativ zur jeweiligen Site-Datei aufgeloest.
+
+## Fehlerseiten
+
+Die Standardfehlerseiten fuer `400`, `403`, `404`, `405`, `411`, `413`, `431`, `500`, `502`, `503` und `504` liegen unter [assets/error-pages](assets/error-pages) und werden beim Build direkt in das Binary eingebettet. Sie funktionieren daher auch ohne zusaetzliche Dateien auf dem Server. Eigene konfigurierbare Fehlerseiten folgen spaeter.
+
+## Linux-Installation und systemd
+
+Ein Release-Binary wird mit folgendem Befehl erstellt:
+
+```sh
+cargo build --locked --release
+sudo packaging/install.sh ./target/release/webserver
+```
+
+Das Installationsskript verwendet den etablierten Systembenutzer und die Gruppe `www-data` (wie nginx und Apache auf Debian/Ubuntu), installiert das Binary nach `/usr/local/bin/webserver`, erzeugt die Standardverzeichnisse, installiert die systemd-Unit und aktiviert den Dienst. Falls `www-data` fehlt, wird das Systemkonto angelegt. Die produktive Konfiguration liegt unter `/etc/webserver/webserver.toml`; jede Site liegt unter `/etc/webserver/sites/*.conf`. Statische Dateien liegen standardmaessig in `/var/www/webserver/public`.
+
+`/usr/local/bin` liegt auf gängigen Linux-Systemen bereits im globalen `PATH`; deshalb ist kein Eintrag in `.bashrc` oder eine Shell-Alias-Datei erforderlich. Falls das Paket `bash-completion` installiert ist, richtet der Installer ausserdem Tab-Vervollständigung für `webserver` ein. Sie kann auch manuell erzeugt werden:
+
+```sh
+webserver completion bash > /usr/share/bash-completion/completions/webserver
+```
+
+```sh
+sudo systemctl status webserver
+sudo systemctl reload webserver  # laedt die Konfiguration neu
+sudo journalctl -u webserver -f
+```
+
+Auf Linux verarbeitet der Prozess `SIGHUP` als Konfigurationsreload. Bei ungültiger Konfiguration wird der Reload abgelehnt und die bisherige, funktionierende Konfiguration weiterverwendet. Der aktuelle Server lauscht standardmaessig auf HTTP-Port 80. Port 443 wird erst gemeinsam mit echter TLS-/ACME-Unterstuetzung aktiviert; HTTP ohne TLS auf 443 waere kein valider HTTPS-Dienst.
+
+## Windows Server
+
+Windows Server wird nativ unterstuetzt. Das Binary kann normal in PowerShell gestartet werden oder als echter Windows-Service laufen. Der Installer legt die folgenden Orte an:
+
+```text
+C:\Program Files\Webserver\webserver.exe
+C:\ProgramData\Webserver\webserver.toml
+C:\ProgramData\Webserver\sites\*.conf
+C:\inetpub\wwwroot\Webserver\public
+```
+
+In einer **als Administrator** gestarteten PowerShell:
+
+```powershell
+cargo build --locked --release
+.\packaging\windows\install.ps1 -BinaryPath .\target\release\webserver.exe
+Get-Service Webserver
+```
+
+Der Dienst läuft als `NT AUTHORITY\LOCAL SERVICE`; der Installer setzt auf Konfiguration und statische Inhalte die erforderlichen Leserechte. Der Dienst kann wie jeder Windows-Service verwaltet werden:
+
+```powershell
+Restart-Service Webserver
+Stop-Service Webserver
+Get-Service Webserver
+```
+
+## Releases
+
+Der Workflow [release.yml](.github/workflows/release.yml) baut bei einem Git-Tag wie `v0.1.0` ein Linux-x86_64-Release-Archiv mit Binary, Installer und systemd-Unit. Ein eigentlicher Paket-Repository-Feed (APT/RPM) ist noch nicht eingerichtet; das Archiv ist der sichere, einfache erste Distributionsweg.

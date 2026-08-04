@@ -1,0 +1,5 @@
+[server]
+bind = "0.0.0.0:80"
+upstream_timeout_secs = 30
+max_header_bytes = 32768
+max_body_bytes = 10485760
