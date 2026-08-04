@@ -1,0 +1,14 @@
+/target/
+
+# Local environment and secret material
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Locally generated runtime data
+/data/
+/logs/

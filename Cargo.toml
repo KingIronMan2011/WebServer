@@ -1,0 +1,8 @@
+[package]
+name = "webserver"
+version = "0.1.0"
+edition = "2024"
+description = "A Caddy-inspired reverse proxy and web server written in Rust."
+publish = false
+
+[dependencies]
