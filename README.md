@@ -150,6 +150,24 @@ Eine Site-Datei besitzt einen Host und ihre Routen. Eine Route besitzt entweder 
 
 Sobald `tls.enabled = true` gesetzt ist, startet der Server zusätzlich auf Port 443. Für jede konfigurierte Site ohne lokales Zertifikat fordert er automatisch ein Let's-Encrypt-Zertifikat per HTTP-01 an, speichert es im `certificate_cache` und erneuert es automatisch. Port 80 bleibt dabei erforderlich: Nur `/.well-known/acme-challenge/...` wird dort für Let's Encrypt ausgeliefert, alle übrigen HTTP-Anfragen werden mit einem permanenten Redirect auf HTTPS weitergeleitet. DNS der jeweiligen Hosts muss vorher auf den Server zeigen und beide Ports müssen von außen erreichbar sein. Änderungen an TLS-Einstellungen oder Hostnamen werden erst nach einem Dienstneustart übernommen; Routen können weiter per Reload geändert werden.
 
+### DNS-01 und Wildcard-Zertifikate
+
+Für Wildcards oder Hosts ohne öffentlich erreichbaren Port 80 kann DNS-01 verwendet werden. Der Server integriert dafür den DNS-Provider-Client [lego](https://go-acme.github.io/lego/dns/); dessen Provider (etwa Cloudflare, Route 53 und DigitalOcean) und die CNAME-/NS-Delegation von `_acme-challenge` werden direkt unterstützt. `lego` muss installiert sein; Zugangsdaten bleiben in einer geschützten `KEY=VALUE`-Datei und werden nur für den gestarteten Provider-Prozess als Umgebungsvariablen gesetzt.
+
+```toml
+[tls.dns_challenge]
+command = "/usr/bin/lego" # optional; Standard ist "lego"
+
+[[tls.dns_challenge.providers]]
+provider = "cloudflare"
+domains = ["example.com", "*.example.com"]
+credentials_file = "/etc/webserver/dns/cloudflare.env"
+# Optional: Resolver, die bei delegierten CNAME-/NS-Zonen abgefragt werden.
+resolvers = ["1.1.1.1:53", "8.8.8.8:53"]
+```
+
+Für Cloudflare enthält die Credentials-Datei beispielsweise `CLOUDFLARE_DNS_API_TOKEN=...`. Sie muss dem Dienst lesbar sein und darf nicht für andere lesbar oder für Gruppe/andere schreibbar sein (unter Linux in der Regel `0600`). Beim ersten Start fordert der Server das Zertifikat an; bei weiteren Starts führt er sicher `lego renew` aus. Für eine vollständig automatische Erneuerung ohne Neustart sollte der Dienst regelmäßig neu gestartet werden, beispielsweise über einen systemd-Timer.
+
 ### Lokale Zertifikate und eigene CA
 
 Lokale Zertifikate werden als PEM-Kette und PEM-Private-Key konfiguriert und per SNI dem jeweiligen Host zugeordnet. Das funktioniert genauso mit Zertifikaten einer eigenen internen CA; die vollständige Kette gehört in `certificate`.

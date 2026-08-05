@@ -16,3 +16,12 @@ certificate_cache = 'C:\ProgramData\Webserver\certificates\acme'
 # hosts = ["internal.example.com"]
 # certificate = 'C:\ProgramData\Webserver\certificates\local\internal.example.com.fullchain.pem'
 # private_key = 'C:\ProgramData\Webserver\certificates\local\internal.example.com.key.pem'
+
+# DNS-01 / Wildcard certificates via a lego provider. CNAME and NS delegation
+# are followed by lego; credentials are KEY=VALUE lines in a protected file.
+# [tls.dns_challenge]
+# command = 'C:\Program Files\lego\lego.exe'
+# [[tls.dns_challenge.providers]]
+# provider = "cloudflare"
+# domains = ["example.com", "*.example.com"]
+# credentials_file = 'C:\ProgramData\Webserver\dns\cloudflare.env'

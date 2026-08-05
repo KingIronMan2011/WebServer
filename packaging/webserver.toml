@@ -18,3 +18,14 @@ certificate_cache = "/etc/webserver/certificates/acme"
 # hosts = ["internal.example.com"]
 # certificate = "/etc/webserver/certificates/local/internal.example.com.fullchain.pem"
 # private_key = "/etc/webserver/certificates/local/internal.example.com.key.pem"
+
+# DNS-01 supports lego's DNS providers (for example cloudflare, route53 and
+# digitalocean), delegated CNAME/NS challenge zones and wildcard certificates.
+# Install lego separately and keep this credentials file mode 0600.
+# [tls.dns_challenge]
+# command = "/usr/bin/lego"
+# [[tls.dns_challenge.providers]]
+# provider = "cloudflare"
+# domains = ["example.com", "*.example.com"]
+# credentials_file = "/etc/webserver/dns/cloudflare.env"
+# resolvers = ["1.1.1.1:53", "8.8.8.8:53"]

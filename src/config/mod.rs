@@ -42,6 +42,10 @@ pub struct TlsConfig {
     pub certificate_cache: PathBuf,
     #[serde(default)]
     pub certificates: Vec<LocalCertificateConfig>,
+    /// DNS-01 certificates are obtained through the `lego` DNS-provider client.
+    /// Credentials live in environment-style files rather than in this config.
+    #[serde(default)]
+    pub dns_challenge: Option<DnsChallengeConfig>,
 }
 
 impl Default for TlsConfig {
@@ -52,8 +56,32 @@ impl Default for TlsConfig {
             email: None,
             certificate_cache: default_certificate_cache(),
             certificates: Vec::new(),
+            dns_challenge: None,
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DnsChallengeConfig {
+    /// Path to the lego binary. Keeping this configurable also makes packaging
+    /// independent of a particular operating system package manager.
+    #[serde(default = "default_lego_command")]
+    pub command: PathBuf,
+    #[serde(default)]
+    pub providers: Vec<DnsProviderConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DnsProviderConfig {
+    /// lego DNS provider name, for example `cloudflare`, `route53` or `digitalocean`.
+    pub provider: String,
+    /// DNS names in one certificate. Wildcards such as `*.example.com` are valid.
+    pub domains: Vec<String>,
+    /// File containing KEY=VALUE credentials accepted by the selected lego provider.
+    pub credentials_file: PathBuf,
+    /// Optional recursive resolvers used while waiting for CNAME/NS delegated records.
+    #[serde(default)]
+    pub resolvers: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -143,6 +171,9 @@ fn default_max_body_bytes() -> u64 {
 }
 fn default_index_file() -> String {
     "index.html".into()
+}
+fn default_lego_command() -> PathBuf {
+    PathBuf::from("lego")
 }
 
 impl Config {
@@ -320,6 +351,55 @@ impl Config {
         }
         if self.tls.enabled {
             self.validate_local_certificates(&hosts)?;
+            self.validate_dns_challenge()?;
+        }
+        Ok(())
+    }
+
+    fn validate_dns_challenge(&self) -> Result<()> {
+        let Some(dns) = &self.tls.dns_challenge else {
+            return Ok(());
+        };
+        if dns.providers.is_empty() {
+            return Err(Error::Config(
+                "tls.dns_challenge needs at least one provider".into(),
+            ));
+        }
+        let mut domains = HashSet::new();
+        for provider in &dns.providers {
+            if provider.provider.trim().is_empty()
+                || provider.provider.chars().any(|character| {
+                    !character.is_ascii_alphanumeric() && character != '-' && character != '_'
+                })
+            {
+                return Err(Error::Config(
+                    "DNS provider must be a lego provider identifier".into(),
+                ));
+            }
+            if provider.domains.is_empty() {
+                return Err(Error::Config(format!(
+                    "DNS provider {} needs at least one domain",
+                    provider.provider
+                )));
+            }
+            if !provider.credentials_file.is_file() {
+                return Err(Error::Config(format!(
+                    "DNS credentials file does not exist: {}",
+                    provider.credentials_file.display()
+                )));
+            }
+            ensure_private_key_permissions(&provider.credentials_file)?;
+            for domain in &provider.domains {
+                let bare = domain.strip_prefix("*.").unwrap_or(domain);
+                if domain.starts_with("*.") && bare.contains('*') || !is_safe_host_name(bare) {
+                    return Err(Error::Config(format!("invalid DNS-01 domain: {domain}")));
+                }
+                if !domains.insert(domain.to_ascii_lowercase()) {
+                    return Err(Error::Config(format!(
+                        "DNS-01 domain is configured more than once: {domain}"
+                    )));
+                }
+            }
         }
         Ok(())
     }

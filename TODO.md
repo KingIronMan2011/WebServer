@@ -24,7 +24,7 @@ Dieses Dokument ist der Arbeitsplan für den Server. Die erste HTTP/1.1-Version 
 - [x] SNI und mehrere TLS-Sites auf einem Listener
 - [x] ACME-Client für Let's Encrypt
 - [x] HTTP-01-Challenge und automatisierte Zertifikatserneuerung
-- [ ] DNS-01-Challenge mit DNS-Provider-Integrationen, CNAME/NS-Delegation und Wildcard-Zertifikaten
+- [x] DNS-01-Challenge mit DNS-Provider-Integrationen, CNAME/NS-Delegation und Wildcard-Zertifikaten
 - [x] Lokale Zertifikate und eigene Certificate Authorities unterstützen
 - [x] Sichere Ablage und Rechte für private Schlüssel
 
