@@ -281,10 +281,11 @@ Get-Service Webserver
 
 ## Docker-APT-Repository
 
-Das Docker-Image baut das Binary und das Debian-Paket direkt aus dem Arbeitsbaum; es lädt weder GitHub-Releases noch andere Build-Artefakte herunter. Es liefert anschließend ein APT-Repository für `amd64` auf Port `8080` aus.
+Der APT-Repository-Container wird mit `apt-repo/` als eigenständigem Docker-Build-Kontext gebaut. Die Build-Stage klont den konfigurierten Quell-Branch und erstellt daraus Binary und Debian-Paket; das finale Image enthält ausschließlich nginx und das erzeugte APT-Repository für `amd64` auf Port `8080`.
 
 ```sh
-docker build -f apt-repo/Dockerfile -t webserver-apt-repo .
+cd apt-repo
+docker build -t webserver-apt-repo .
 docker run --rm -p 8080:8080 webserver-apt-repo
 ```
 

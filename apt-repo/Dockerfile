@@ -1,13 +1,13 @@
-# Build from the repository root: docker build -f apt-repo/Dockerfile .
+# Build this file with apt-repo/ as the Docker build context.
 FROM rust:bookworm AS build
 
+ARG SOURCE_REPOSITORY=https://github.com/KingIronMan2011/WebServer.git
+ARG SOURCE_REF=main
+
+RUN apt-get update && apt-get install --no-install-recommends -y ca-certificates git && rm -rf /var/lib/apt/lists/*
+COPY debian/postinst /tmp/postinst
 WORKDIR /src
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
-COPY assets ./assets
-COPY packaging ./packaging
-COPY apt-repo ./apt-repo
-COPY README.md ./README.md
+RUN git clone --depth 1 --branch "$SOURCE_REF" "$SOURCE_REPOSITORY" .
 
 RUN cargo build --locked --release
 
@@ -16,7 +16,7 @@ RUN set -eux; \
     install -d /package/DEBIAN /package/usr/local/bin /package/lib/systemd/system /package/usr/share/doc/webserver /package/usr/share/webserver; \
     install -m 0755 target/release/webserver /package/usr/local/bin/webserver; \
     install -m 0644 packaging/systemd/webserver.service /package/lib/systemd/system/webserver.service; \
-    install -m 0755 apt-repo/debian/postinst /package/DEBIAN/postinst; \
+    install -m 0755 /tmp/postinst /package/DEBIAN/postinst; \
     install -m 0644 packaging/webserver.toml /package/usr/share/webserver/webserver.toml; \
     install -m 0644 packaging/sites/localhost.conf /package/usr/share/webserver/localhost.conf; \
     printf 'Package: webserver\nVersion: %s\nSection: web\nPriority: optional\nArchitecture: amd64\nMaintainer: Webserver maintainers\nDescription: Caddy-inspired reverse proxy and web server\n' "$version" > /package/DEBIAN/control; \
@@ -36,5 +36,5 @@ RUN set -eux; \
 # Rust, source code, dpkg-dev and all intermediate build files stay in prior stages.
 FROM nginx:alpine
 COPY --from=repository /repo /usr/share/nginx/html
-COPY apt-repo/nginx.conf /etc/nginx/conf.d/default.conf
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 8080
