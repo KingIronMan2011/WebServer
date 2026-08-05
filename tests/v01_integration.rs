@@ -153,7 +153,7 @@ fn cli_manages_sites_and_routes() {
         vec!["check", "--config"],
     ] {
         let mut command = Command::new(binary());
-        command.args(arguments).arg(&config);
+        command.args(&arguments).arg(&config);
         if command.get_args().any(|argument| argument == "site-add") {
             command.args(["--host", "example.test"]);
         }
@@ -170,8 +170,50 @@ fn cli_manages_sites_and_routes() {
         let output = command.output().expect("run CLI command");
         assert!(
             output.status.success(),
-            "command failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "command {arguments:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr),
         );
     }
+}
+
+#[test]
+fn enforces_body_limits_and_returns_error_pages() {
+    let directory = TempDirectory::new();
+    let public = directory.0.join("public");
+    fs::create_dir_all(&public).expect("create public directory");
+    fs::write(public.join("index.html"), "ok").expect("write static fixture");
+    let port = unused_port();
+    let config = directory.0.join("webserver.toml");
+    let sites = directory.0.join("sites");
+    fs::create_dir_all(&sites).expect("create sites directory");
+    fs::write(
+        &config,
+        format!("[server]\nbind = \"127.0.0.1:{port}\"\nmax_body_bytes = 10\n"),
+    )
+    .expect("write global configuration");
+    fs::write(
+        sites.join("localhost.conf"),
+        "host = \"localhost\"\n\n[[routes]]\npath_prefix = \"/\"\nkind = \"static\"\nroot = \"../public\"\n",
+    )
+    .expect("write site configuration");
+
+    let _server = start_server(&config);
+    let oversized = request(
+        port,
+        "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 11\r\nConnection: close\r\n\r\n01234567890",
+    );
+    assert!(oversized.starts_with("HTTP/1.1 413 Payload Too Large"));
+    assert!(oversized.contains("text/html; charset=utf-8"));
+
+    let chunked = request(
+        port,
+        "POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n0\r\n\r\n",
+    );
+    assert!(chunked.starts_with("HTTP/1.1 411 Length Required"));
+
+    let missing_host = request(
+        port,
+        "GET / HTTP/1.1\r\nHost: unknown.test\r\nConnection: close\r\n\r\n",
+    );
+    assert!(missing_host.starts_with("HTTP/1.1 404 Not Found"));
 }

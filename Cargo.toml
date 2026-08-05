@@ -12,12 +12,19 @@ clap_complete = "4"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "server-auto", "tokio"] }
+futures-util = "0.3"
 mime_guess = "2"
 percent-encoding = "2"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+rustls = "0.23"
+rustls-acme = { version = "0.15", features = ["tokio"] }
+rustls-pemfile = "2"
+tokio-rustls = "0.26"
 toml = "0.8"
+toml_edit = "0.22"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
@@ -28,3 +35,7 @@ strip = "symbols"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+rcgen = "0.13"

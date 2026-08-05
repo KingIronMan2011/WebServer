@@ -29,6 +29,8 @@ fi
 
 install -Dm755 "$binary" /usr/local/bin/webserver
 install -d -m750 -o root -g www-data /etc/webserver/sites
+install -d -m750 -o root -g www-data /etc/webserver/certificates /etc/webserver/certificates/local
+install -d -m750 -o www-data -g www-data /etc/webserver/certificates/acme
 install -d -m750 -o www-data -g www-data /var/www/webserver /var/www/webserver/public /var/log/webserver
 
 if [ ! -f /etc/webserver/webserver.toml ]; then

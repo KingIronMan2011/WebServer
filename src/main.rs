@@ -7,6 +7,7 @@ mod http;
 mod observability;
 mod routing;
 mod server;
+mod tls;
 mod upstream;
 
 #[cfg(windows)]

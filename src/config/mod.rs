@@ -3,18 +3,22 @@
 use std::{
     collections::HashSet,
     fs,
+    io::Write,
     net::SocketAddr,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use hyper::Uri;
 use serde::{Deserialize, Serialize};
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
 use crate::error::{Error, Result};
 
 #[derive(Clone)]
 pub struct Config {
     pub server: ServerConfig,
+    pub tls: TlsConfig,
     pub sites: Vec<SiteConfig>,
     source_path: PathBuf,
 }
@@ -23,6 +27,40 @@ pub struct Config {
 struct GlobalConfig {
     #[serde(default)]
     server: ServerConfig,
+    #[serde(default)]
+    tls: TlsConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct TlsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_https_bind")]
+    pub bind: SocketAddr,
+    pub email: Option<String>,
+    #[serde(default = "default_certificate_cache")]
+    pub certificate_cache: PathBuf,
+    #[serde(default)]
+    pub certificates: Vec<LocalCertificateConfig>,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: default_https_bind(),
+            email: None,
+            certificate_cache: default_certificate_cache(),
+            certificates: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct LocalCertificateConfig {
+    pub hosts: Vec<String>,
+    pub certificate: PathBuf,
+    pub private_key: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -80,6 +118,20 @@ pub enum RouteTarget {
 fn default_bind() -> SocketAddr {
     "0.0.0.0:80".parse().expect("default bind address is valid")
 }
+fn default_https_bind() -> SocketAddr {
+    "0.0.0.0:443"
+        .parse()
+        .expect("default HTTPS bind address is valid")
+}
+#[cfg(windows)]
+fn default_certificate_cache() -> PathBuf {
+    PathBuf::from(r"C:\ProgramData\Webserver\certificates\acme")
+}
+
+#[cfg(not(windows))]
+fn default_certificate_cache() -> PathBuf {
+    PathBuf::from("/etc/webserver/certificates/acme")
+}
 fn default_timeout() -> u64 {
     30
 }
@@ -129,6 +181,7 @@ impl Config {
 
         Ok(Self {
             server: global.server,
+            tls: global.tls,
             sites,
             source_path,
         })
@@ -146,16 +199,9 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<()> {
-        let global = GlobalConfig {
-            server: self.server.clone(),
-        };
-        fs::write(
-            &self.source_path,
-            toml::to_string_pretty(&global).map_err(|error| Error::Config(error.to_string()))?,
-        )?;
         fs::create_dir_all(self.sites_directory())?;
         for site in &self.sites {
-            save_site(site)?;
+            save_site_preserving_comments(site)?;
         }
         Ok(())
     }
@@ -272,6 +318,54 @@ impl Config {
                 self.validate_route(site, route)?;
             }
         }
+        if self.tls.enabled {
+            self.validate_local_certificates(&hosts)?;
+        }
+        Ok(())
+    }
+
+    fn validate_local_certificates(&self, sites: &HashSet<String>) -> Result<()> {
+        let mut local_hosts = HashSet::new();
+        for certificate in &self.tls.certificates {
+            if certificate.hosts.is_empty() {
+                return Err(Error::Config(
+                    "a local certificate needs at least one host".into(),
+                ));
+            }
+            if !certificate.certificate.is_file() {
+                return Err(Error::Config(format!(
+                    "local certificate does not exist: {}",
+                    certificate.certificate.display()
+                )));
+            }
+            if !certificate.private_key.is_file() {
+                return Err(Error::Config(format!(
+                    "local private key does not exist: {}",
+                    certificate.private_key.display()
+                )));
+            }
+            ensure_private_key_permissions(&certificate.private_key)?;
+            for host in &certificate.hosts {
+                let host = normalise_host(host);
+                if host.is_empty() || !is_safe_host_name(&host) || !sites.contains(&host) {
+                    return Err(Error::Config(format!(
+                        "local certificate host must match a configured site: {host}"
+                    )));
+                }
+                if !local_hosts.insert(host) {
+                    return Err(Error::Config(
+                        "a host can only use one local certificate".into(),
+                    ));
+                }
+            }
+        }
+        if self.tls.email.as_deref().is_none_or(str::is_empty)
+            && sites.iter().any(|host| !local_hosts.contains(host))
+        {
+            return Err(Error::Config(
+                "tls.email is required for sites without a local certificate".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -312,6 +406,25 @@ impl Config {
     }
 }
 
+#[cfg(unix)]
+fn ensure_private_key_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = fs::metadata(path)?.permissions().mode();
+    if mode & 0o027 != 0 || mode & 0o004 != 0 {
+        return Err(Error::Config(format!(
+            "local private key must not be writable by group/others or readable by others: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_private_key_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
 impl SiteConfig {
     pub fn static_path(&self, root: &Path) -> PathBuf {
         if root.is_absolute() {
@@ -341,11 +454,142 @@ fn load_site(path: &Path) -> Result<SiteConfig> {
     Ok(site)
 }
 
-fn save_site(site: &SiteConfig) -> Result<()> {
-    fs::write(
-        &site.source_path,
-        toml::to_string_pretty(site).map_err(|error| Error::Config(error.to_string()))?,
-    )?;
+fn save_site_preserving_comments(site: &SiteConfig) -> Result<()> {
+    if !site.source_path.exists() {
+        return atomic_write(
+            &site.source_path,
+            &toml::to_string_pretty(site).map_err(|error| Error::Config(error.to_string()))?,
+        );
+    }
+
+    let original = fs::read_to_string(&site.source_path)?;
+    let current = load_site(&site.source_path)?;
+    let current_paths: HashSet<&str> = current
+        .routes
+        .iter()
+        .map(|route| route.path_prefix.as_str())
+        .collect();
+    let desired_paths: HashSet<&str> = site
+        .routes
+        .iter()
+        .map(|route| route.path_prefix.as_str())
+        .collect();
+    if current_paths == desired_paths {
+        return Ok(());
+    }
+
+    let mut document = original
+        .parse::<DocumentMut>()
+        .map_err(|error| Error::Config(format!("{}: {error}", site.source_path.display())))?;
+    if document["routes"].is_none()
+        || document["routes"]
+            .as_array()
+            .is_some_and(|routes| routes.is_empty())
+    {
+        document["routes"] = Item::ArrayOfTables(ArrayOfTables::new());
+    }
+    let routes = document["routes"].as_array_of_tables_mut().ok_or_else(|| {
+        Error::Config(format!(
+            "{}: routes must be an array of tables",
+            site.source_path.display()
+        ))
+    })?;
+    routes.retain(|route| {
+        route["path_prefix"]
+            .as_str()
+            .is_some_and(|path| desired_paths.contains(path))
+    });
+    for route in &site.routes {
+        if !current_paths.contains(route.path_prefix.as_str()) {
+            routes.push(route_table(route));
+        }
+    }
+    atomic_write(&site.source_path, &document.to_string())?;
+    Ok(())
+}
+
+fn route_table(route: &RouteConfig) -> Table {
+    let mut table = Table::new();
+    table["path_prefix"] = value(&route.path_prefix);
+    match &route.target {
+        RouteTarget::Static { root, index_file } => {
+            table["kind"] = value("static");
+            table["root"] = value(root.to_string_lossy().to_string());
+            table["index_file"] = value(index_file);
+        }
+        RouteTarget::Proxy { upstream } => {
+            table["kind"] = value("proxy");
+            table["upstream"] = value(upstream);
+        }
+    }
+    table
+}
+
+pub fn atomic_write(path: &Path, contents: &str) -> Result<()> {
+    static NEXT_TEMPORARY_FILE: AtomicU64 = AtomicU64::new(0);
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            Error::Config(format!(
+                "configuration path has no valid file name: {}",
+                path.display()
+            ))
+        })?;
+    let temporary = parent.join(format!(
+        ".{name}.{}.{}.tmp",
+        std::process::id(),
+        NEXT_TEMPORARY_FILE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let write_result = (|| -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.into());
+    }
+    replace_file_atomically(&temporary, path)?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomically(temporary: &Path, path: &Path) -> std::io::Result<()> {
+    fs::rename(temporary, path)
+}
+
+#[cfg(windows)]
+fn replace_file_atomically(temporary: &Path, path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let encode = |value: &Path| {
+        value
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>()
+    };
+    let temporary = encode(temporary);
+    let path = encode(path);
+    if unsafe {
+        MoveFileExW(
+            temporary.as_ptr(),
+            path.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
     Ok(())
 }
 
@@ -356,4 +600,65 @@ fn is_safe_host_name(host: &str) -> bool {
 
 pub fn normalise_host(host: &str) -> String {
     host.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn route_edits_preserve_comments_and_leave_no_temporary_file() {
+        let directory =
+            std::env::temp_dir().join(format!("webserver-config-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(directory.join("sites")).expect("create test configuration directory");
+        let config_path = directory.join("webserver.toml");
+        let site_path = directory.join("sites/example.test.conf");
+        fs::write(
+            &config_path,
+            "# global comment\n[server]\nbind = \"127.0.0.1:8080\"\n",
+        )
+        .expect("write global configuration");
+        fs::write(
+            &site_path,
+            "# site comment\nhost = \"example.test\"\n\n# retained route comment\n[[routes]]\npath_prefix = \"/\"\nkind = \"proxy\"\nupstream = \"http://127.0.0.1:3000\"\n",
+        )
+        .expect("write site configuration");
+
+        let mut config = Config::load(&config_path).expect("load configuration");
+        config
+            .add_route(
+                "example.test",
+                RouteConfig {
+                    path_prefix: "/api".into(),
+                    target: RouteTarget::Proxy {
+                        upstream: "http://127.0.0.1:4000".into(),
+                    },
+                },
+            )
+            .expect("add route");
+        config.save().expect("atomically save added route");
+        let edited = fs::read_to_string(&site_path).expect("read edited configuration");
+        assert!(edited.contains("# site comment"));
+        assert!(edited.contains("# retained route comment"));
+        assert!(edited.contains("path_prefix = \"/api\""));
+
+        config
+            .remove_route("example.test", "/api")
+            .expect("remove route");
+        config.save().expect("atomically save removed route");
+        let edited = fs::read_to_string(&site_path).expect("read edited configuration");
+        assert!(edited.contains("# retained route comment"));
+        assert!(!edited.contains("path_prefix = \"/api\""));
+        assert!(
+            fs::read_dir(&directory)
+                .expect("read test directory")
+                .all(|entry| !entry
+                    .expect("read entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".tmp"))
+        );
+        fs::remove_dir_all(directory).expect("remove test configuration directory");
+    }
 }

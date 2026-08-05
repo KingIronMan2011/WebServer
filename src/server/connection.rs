@@ -20,12 +20,32 @@ pub async fn handle(
     request: Request<Incoming>,
     peer: SocketAddr,
     config: Arc<RwLock<Config>>,
+    tls: Option<Arc<crate::tls::TlsManager>>,
+    is_tls: bool,
 ) -> Result<hyper::Response<Body>, Infallible> {
     let started = Instant::now();
     let config = config.read().await.clone();
     let context = RequestContext::from_request(&request);
     let method = request.method().clone();
     let path = context.path.clone();
+
+    if !is_tls && let Some(tls) = tls {
+        if let Some(token) = context.path.strip_prefix("/.well-known/acme-challenge/")
+            && let Some(key_authorization) = tls.challenge_response(token)
+        {
+            return Ok(response::plain(StatusCode::OK, key_authorization));
+        }
+        let host = context.host;
+        if host.is_empty() {
+            return Ok(response::error(StatusCode::BAD_REQUEST));
+        }
+        let target = request
+            .uri()
+            .path_and_query()
+            .map(|value| value.as_str())
+            .unwrap_or("/");
+        return Ok(response::redirect(format!("https://{host}{target}")));
+    }
 
     let response = match request_size_error(&request, config.server.max_body_bytes) {
         Some(response) => response,

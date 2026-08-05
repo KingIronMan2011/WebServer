@@ -9,7 +9,7 @@ Das Projekt befindet sich noch ganz am Anfang. Der aktuelle Stand enthaelt bewus
 ```text
 Internet / Clients
         |
-        | HTTP, spaeter HTTPS
+        | HTTP und HTTPS
         v
     Webserver
     |- Listener und Protokollschicht
@@ -112,7 +112,7 @@ cargo run -- route-add --host example.test --path /api --upstream http://127.0.0
 cargo run -- route-remove --host example.test --path /api
 ```
 
-## Konfiguration fuer v0.1
+## Konfiguration
 
 Die v0.1-Konfiguration liegt im TOML-Format vor und ist absichtlich wie nginx in globale und Site-spezifische Dateien getrennt. Jede reguläre Datei unter `sites/` wird als eine Site geladen; die Dateiendung ist frei waehbar, `.conf` ist die empfohlene Konvention.
 
@@ -123,6 +123,12 @@ bind = "0.0.0.0:80"
 upstream_timeout_secs = 30
 max_header_bytes = 32768
 max_body_bytes = 10485760
+
+[tls]
+enabled = true
+bind = "0.0.0.0:443"
+email = "admin@example.com"
+certificate_cache = "/etc/webserver/certificates/acme"
 ```
 
 ```toml
@@ -141,6 +147,26 @@ upstream = "http://127.0.0.1:3000"
 ```
 
 Eine Site-Datei besitzt einen Host und ihre Routen. Eine Route besitzt entweder `kind = "static"` mit `root` (und optional `index_file`) oder `kind = "proxy"` mit einem vollständigen HTTP-Upstream. Bei mehreren Treffern gewinnt die Route mit dem längsten passenden Pfadpraefix. Relative Static-Roots werden relativ zur jeweiligen Site-Datei aufgeloest.
+
+Sobald `tls.enabled = true` gesetzt ist, startet der Server zusätzlich auf Port 443. Für jede konfigurierte Site ohne lokales Zertifikat fordert er automatisch ein Let's-Encrypt-Zertifikat per HTTP-01 an, speichert es im `certificate_cache` und erneuert es automatisch. Port 80 bleibt dabei erforderlich: Nur `/.well-known/acme-challenge/...` wird dort für Let's Encrypt ausgeliefert, alle übrigen HTTP-Anfragen werden mit einem permanenten Redirect auf HTTPS weitergeleitet. DNS der jeweiligen Hosts muss vorher auf den Server zeigen und beide Ports müssen von außen erreichbar sein. Änderungen an TLS-Einstellungen oder Hostnamen werden erst nach einem Dienstneustart übernommen; Routen können weiter per Reload geändert werden.
+
+### Lokale Zertifikate und eigene CA
+
+Lokale Zertifikate werden als PEM-Kette und PEM-Private-Key konfiguriert und per SNI dem jeweiligen Host zugeordnet. Das funktioniert genauso mit Zertifikaten einer eigenen internen CA; die vollständige Kette gehört in `certificate`.
+
+```toml
+[[tls.certificates]]
+hosts = ["internal.example.com"]
+certificate = "/etc/webserver/certificates/local/internal.example.com.fullchain.pem"
+private_key = "/etc/webserver/certificates/local/internal.example.com.key.pem"
+```
+
+Lokale Zertifikate gewinnen gegenüber ACME. Bestehen alle TLS-Sites aus lokalen Zertifikaten, ist keine `tls.email` erforderlich. Der Linux-Installer trennt `/etc/webserver/certificates/acme` (schreibbar für automatische Erneuerungen) von `/etc/webserver/certificates/local` (nur lesbar für den Dienst). Private Keys müssen reguläre Dateien sein, dürfen weder für andere lesbar noch für Gruppe/andere schreibbar sein. Empfohlene Installation:
+
+```sh
+sudo install -m 640 -o root -g www-data fullchain.pem /etc/webserver/certificates/local/internal.example.com.fullchain.pem
+sudo install -m 640 -o root -g www-data privkey.pem /etc/webserver/certificates/local/internal.example.com.key.pem
+```
 
 ## Fehlerseiten
 
@@ -169,7 +195,7 @@ sudo systemctl reload webserver  # laedt die Konfiguration neu
 sudo journalctl -u webserver -f
 ```
 
-Auf Linux verarbeitet der Prozess `SIGHUP` als Konfigurationsreload. Bei ungültiger Konfiguration wird der Reload abgelehnt und die bisherige, funktionierende Konfiguration weiterverwendet. Der aktuelle Server lauscht standardmaessig auf HTTP-Port 80. Port 443 wird erst gemeinsam mit echter TLS-/ACME-Unterstuetzung aktiviert; HTTP ohne TLS auf 443 waere kein valider HTTPS-Dienst.
+Auf Linux verarbeitet der Prozess `SIGHUP` als Konfigurationsreload. Bei ungültiger Konfiguration wird der Reload abgelehnt und die bisherige, funktionierende Konfiguration weiterverwendet. TLS-Einstellungen und die Liste der TLS-Hostnamen benötigen dagegen einen Neustart, damit Listener und ACME-Verwaltung konsistent neu aufgebaut werden. Der Installer reserviert Port 80 und 443 über `CAP_NET_BIND_SERVICE` für den Dienstbenutzer `www-data` und gibt diesem nur auf den Zertifikatsspeicher Schreibzugriff.
 
 ## Windows Server
 
@@ -190,7 +216,7 @@ cargo build --locked --release
 Get-Service Webserver
 ```
 
-Der Dienst läuft als `NT AUTHORITY\LOCAL SERVICE`; der Installer setzt auf Konfiguration und statische Inhalte die erforderlichen Leserechte. Der Dienst kann wie jeder Windows-Service verwaltet werden:
+Der Dienst läuft als `NT AUTHORITY\LOCAL SERVICE`; der Installer setzt auf Konfiguration und statische Inhalte die erforderlichen Leserechte sowie Schreibrechte ausschließlich auf `C:\ProgramData\Webserver\certificates`. Der Dienst kann wie jeder Windows-Service verwaltet werden:
 
 ```powershell
 Restart-Service Webserver

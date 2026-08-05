@@ -37,6 +37,28 @@ pub fn error(status: StatusCode) -> Response<Body> {
         .expect("valid error response")
 }
 
+pub fn plain(status: StatusCode, value: String) -> Response<Body> {
+    let bytes = Bytes::from(value);
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(CONTENT_LENGTH, bytes.len())
+        .body(Full::new(bytes).map_err(|never| match never {}).boxed())
+        .expect("valid response")
+}
+
+pub fn redirect(location: String) -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::PERMANENT_REDIRECT)
+        .header(hyper::header::LOCATION, location)
+        .body(
+            Empty::<Bytes>::new()
+                .map_err(|never| match never {})
+                .boxed(),
+        )
+        .expect("valid redirect")
+}
+
 pub fn full(status: StatusCode, content_type: &str, bytes: Bytes) -> Response<Body> {
     Response::builder()
         .status(status)

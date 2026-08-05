@@ -123,8 +123,8 @@ fn write_example_config(path: &Path) -> Result<()> {
             "<!doctype html><title>Webserver</title><h1>It works!</h1>\n",
         )?;
     }
-    std::fs::write(path, starter_config())?;
-    std::fs::write(sites.join("localhost.conf"), starter_site_config())?;
+    crate::config::atomic_write(path, starter_config())?;
+    crate::config::atomic_write(&sites.join("localhost.conf"), starter_site_config())?;
     println!("Created example configuration: {}", path.display());
     Ok(())
 }
