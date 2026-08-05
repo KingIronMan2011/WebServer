@@ -1,12 +1,49 @@
 # Webserver
 
-Ein in Rust gebauter, Caddy-inspirierter Webserver und Reverse Proxy. Das Ziel ist ein einzelnes, produktionsnahes Binary mit einfachen Defaults und einer unkomplizierten CLI, ohne die Flexibilitaet klassischer Webserver aufzugeben.
+Ein in Rust geschriebener Webserver und Reverse Proxy mit einer schlanken
+TOML-Konfiguration. Das Projekt bündelt Static-File-Serving, TLS,
+Load-Balancing, Observability und moderne HTTP-Protokolle in einem Binary.
 
-Das Projekt befindet sich noch ganz am Anfang. Der aktuelle Stand enthaelt bewusst nur das Rust-Grundgeruest; die nachfolgende Roadmap beschreibt den geplanten Zielumfang.
+**Aktueller Stand: v0.6.0.** Der vollständige nächste Ausbauplan steht in
+[TODO.md](TODO.md).
+
+## Inhalt
+
+- [Schnellstart](#schnellstart)
+- [Installation auf Debian und Ubuntu](#installation-auf-debian-und-ubuntu)
+- [Betrieb](#betrieb)
+- [Konfiguration](#konfiguration)
+- [TLS und HTTP/3](#tls-und-http3)
+- [Upstreams und Discovery](#upstreams-und-discovery)
+- [Sicherheit und Observability](#sicherheit-und-observability)
+- [Entwicklung](#entwicklung)
+
+## Schnellstart
+
+Für die lokale Entwicklung genügt eine aktuelle Rust-Toolchain:
+
+```sh
+cargo run -- init
+cargo run -- check
+cargo run -- run
+```
+
+`init` legt eine globale Konfiguration, eine erste Site-Datei und ein
+Startdokument an. `check` validiert die Konfiguration ohne einen Port zu
+öffnen. `run` startet den Server.
+
+Die Standardstruktur ist:
+
+```text
+webserver.toml              # globale Server- und TLS-Einstellungen
+sites/
+  example.com.conf          # eine virtuelle Site je Datei
+public/                     # statische Inhalte
+```
 
 ## Installation auf Debian und Ubuntu
 
-Das Paketrepository unterstützt derzeit `amd64` und wird kryptografisch signiert. Auf Debian, Ubuntu und darauf basierenden Systemen lässt sich der Webserver so installieren:
+Das signierte APT-Repository stellt derzeit `amd64`-Pakete bereit:
 
 ```sh
 sudo apt update
@@ -20,126 +57,46 @@ echo 'deb [signed-by=/usr/share/keyrings/webserver-archive-keyring.gpg] https://
 
 sudo apt update
 sudo apt install webserver
+sudo systemctl enable --now webserver
 ```
 
-Danach stehen `webserver`, die Standardkonfiguration unter `/etc/webserver/` und der systemd-Dienst zur Verfügung:
+Danach liegen Konfiguration und Inhalte unter `/etc/webserver/` beziehungsweise
+`/var/www/webserver/`. Der Dienst läuft als `www-data` und nutzt systemd
+Hardening sowie `CAP_NET_BIND_SERVICE` für Ports unter 1024.
+
+## Betrieb
+
+| Aufgabe | Befehl |
+| --- | --- |
+| Konfiguration prüfen | `webserver check --config /etc/webserver/webserver.toml` |
+| Dienst starten | `sudo systemctl start webserver` |
+| Routen neu laden | `sudo systemctl reload webserver` |
+| Logs verfolgen | `sudo journalctl -u webserver -f` |
+
+Ein Reload (`SIGHUP`) übernimmt Routen- und Serveränderungen, sofern die neue
+Konfiguration gültig ist. Änderungen an TLS-Listenern oder Zertifikaten
+benötigen einen Neustart.
+
+### Zero-Downtime-Binary-Upgrade unter Linux
+
+Der Server verwendet auf Linux `SO_REUSEPORT`. Eine Ersatz-Binary bindet die
+HTTP-, HTTPS- und QUIC-Ports zuerst; die bisherige Generation nimmt danach
+keine neuen Verbindungen mehr an und beendet laufende Requests sauber.
 
 ```sh
-sudo systemctl enable --now webserver
-sudo systemctl status webserver
+sudo install -m 755 ./target/release/webserver /usr/local/bin/webserver.new
+sudo mv -f /usr/local/bin/webserver.new /usr/local/bin/webserver
+sudo systemctl kill -s USR2 webserver.service
 ```
 
-## Zielbild
-
-```text
-Internet / Clients
-        |
-        | HTTP und HTTPS
-        v
-    Webserver
-    |- Listener und Protokollschicht
-    |- Host- und Pfad-Routing
-    |- Static-File-Handler
-    |- Reverse Proxy und Load Balancer
-    |- TLS- und Zertifikatsverwaltung
-    |- Sicherheits-, Logging- und Metrikschicht
-    `- CLI und Konfigurationsverwaltung
-        |
-        v
-    Upstreams: Anwendungen, Dienste, Container
-```
-
-## Geplanter Funktionsumfang
-
-### HTTP und Routing
-
-- HTTP/1.1 mit Keep-Alive und sauberem Request-/Response-Handling
-- Virtuelle Hosts anhand des `Host`-Headers
-- Pfadbasiertes Routing; die spezifischste passende Route gewinnt
-- Methoden-, Header- und Query-Parameter-Verarbeitung
-- Konfigurierbare Redirects und Header-Regeln
-- WebSocket- und Streaming-Proxying
-
-### Static Files
-
-- Auslieferung statischer Dateien pro Site oder Route
-- MIME-Type-Erkennung, Index-Dateien und konfigurierbare Fehlerseiten
-- Sichere Pfadauflosung mit Schutz vor Path Traversal
-- Conditional Requests und Cache-Header
-- Kompression mit gzip und Brotli
-
-### Reverse Proxy und Upstreams
-
-- Proxying zu HTTP-Upstreams
-- Korrekte `Host`- sowie `X-Forwarded-*`-Header
-- Verbindungs-Pooling, Timeouts und konfigurierbare Retry-Regeln
-- Aussagekraeftige Fehlerantworten, insbesondere `502 Bad Gateway` und `504 Gateway Timeout`
-- Mehrere Upstreams pro Route
-- Load-Balancing-Strategien: Round Robin, gewichtetes Round Robin und Least Connections
-- Aktive und passive Health Checks sowie Circuit Breaking
-- Spaeter: Discovery ueber DNS, Docker und weitere Infrastrukturquellen
-
-### TLS und Protokolle
-
-- HTTPS mit sicherer Standardkonfiguration
-- ACME-Integration fuer automatische Let's-Encrypt-Zertifikate und Erneuerung
-- SNI und mehrere TLS-Sites auf einem Listener
-- HTTP/2
-- HTTP/3 ueber QUIC (UDP)
-
-### Bedienung und Konfiguration
-
-- Ein einzelnes Rust-Binary fuer Betrieb und Verwaltung
-- CLI als primaerer Einstieg, etwa zum Anlegen von Sites und Routen
-- Interaktiver CLI-Modus fuer einfache Einrichtung
-- Menschenlesbare, manuell editierbare Konfiguration
-- Eine gemeinsam genutzte Management-Schicht: Die CLI verwaltet Konfiguration und Runtime; sie bereitet damit eine spaetere Admin-API vor
-- Konfigurationspruefung vor dem Start oder Reload
-- Reload ohne unnötige Unterbrechung laufender Verbindungen
-
-Ein konkretes Dateiformat wird erst festgelegt, wenn das Konfigurationsmodell steht. TOML ist aktuell der bevorzugte Kandidat.
-
-### Betrieb, Sicherheit und Beobachtbarkeit
-
-- Strukturierte Access- und Error-Logs
-- Konfigurierbare Log-Level und Log-Ausgaben
-- Graceful Shutdown
-- Rate Limits, Request- und Body-Groessenlimits
-- IP-Regeln, sichere Standard-Header und CORS-Regeln
-- Prometheus-kompatible Metriken
-- Spaeter: OpenTelemetry-Tracing, Caching und optionale WAF-Regeln
-- Tests fuer Parser, Routing, Proxy-Verhalten, Konfiguration und Sicherheitsgrenzen
-
-## Nicht Teil des ersten Ziels
-
-Eine browserbasierte Verwaltungsoberflaeche ist als moegliche spaetere Erweiterung vorgemerkt, wird aber nicht im aktuellen Umfang umgesetzt. Wenn sie entsteht, soll sie dieselbe Management-Schicht wie die CLI verwenden und standardmaessig nur lokal sowie abgesichert erreichbar sein.
-
-## Entwicklung
-
-Voraussetzung ist eine aktuelle Rust-Toolchain.
-
-```powershell
-cargo run -- init
-cargo run -- check
-cargo run -- run
-cargo test
-cargo clippy -- -D warnings
-```
-
-`init` erzeugt eine globale `webserver.toml`, eine erste Site unter `sites/localhost.conf` sowie einen passenden `public/index.html`-Startpunkt. `check` validiert die Datei, ohne einen Port zu belegen. `run` startet den Server auf der in der Konfiguration gesetzten Adresse.
-
-Die CLI kann Sites und Routen auch direkt verwalten:
-
-```powershell
-cargo run -- site-add --host example.test
-cargo run -- route-add --host example.test --path / --static ./public
-cargo run -- route-add --host example.test --path /api --upstream http://127.0.0.1:3000
-cargo run -- route-remove --host example.test --path /api
-```
+Falls die Ersatz-Binary unmittelbar fehlschlägt, läuft die bisherige Generation
+weiter.
 
 ## Konfiguration
 
-Die v0.1-Konfiguration liegt im TOML-Format vor und ist absichtlich wie nginx in globale und Site-spezifische Dateien getrennt. Jede reguläre Datei unter `sites/` wird als eine Site geladen; die Dateiendung ist frei waehbar, `.conf` ist die empfohlene Konvention.
+Die globale Datei enthält Listener, Limits, Metriken und TLS. Jede Datei im
+Verzeichnis `sites/` beschreibt genau einen virtuellen Host. Bei mehreren
+passenden Routen gewinnt das längste `path_prefix`.
 
 ```toml
 # /etc/webserver/webserver.toml
@@ -149,33 +106,29 @@ upstream_timeout_secs = 30
 max_header_bytes = 32768
 max_body_bytes = 10485760
 max_connections = 1024
-# Zero disables the per-client request limiter.
 # rate_limit_per_minute = 120
-# allow_ips = ["192.0.2.0/24"] # Empty means allow all.
+# allow_ips = ["192.0.2.0/24"]
 # deny_ips = ["198.51.100.10/32"]
 # trusted_proxies = ["127.0.0.1/32", "::1/128"]
-# Optional Prometheus text endpoint; keep it private or proxy-protected.
 # metrics_path = "/metrics"
 
 [tls]
 enabled = true
 bind = "0.0.0.0:443"
-# Starts HTTP/3 on UDP/443; TCP HTTPS continues to serve HTTP/2 and HTTP/1.1.
 http3 = true
-# Optional when QUIC should use another UDP address. Defaults to `bind`.
-# quic_bind = "0.0.0.0:443"
 email = "admin@example.com"
 certificate_cache = "/etc/webserver/certificates/acme"
 ```
 
 ```toml
-# /etc/webserver/sites/example.conf
+# /etc/webserver/sites/example.com.conf
 host = "example.com"
 
 [[routes]]
 path_prefix = "/"
 kind = "static"
-root = "/var/www/webserver/example"
+root = "/var/www/webserver/example.com"
+index_file = "index.html"
 
 [[routes]]
 path_prefix = "/api"
@@ -183,11 +136,11 @@ kind = "proxy"
 upstream = "http://127.0.0.1:3000"
 ```
 
-Eine Site-Datei besitzt einen Host und ihre Routen. Eine Route besitzt entweder `kind = "static"` mit `root` (und optional `index_file`) oder `kind = "proxy"` mit einem vollständigen HTTP-Upstream. Bei mehreren Treffern gewinnt die Route mit dem längsten passenden Pfadpraefix. Relative Static-Roots werden relativ zur jeweiligen Site-Datei aufgeloest.
+### Statische Dateien und Redirects
 
-Eine Proxy-Route kann auch mehrere Ziele besitzen. Die Ziele werden global per Round Robin ausgewählt; das bisherige einzelne Feld `upstream` bleibt weiterhin gültig.
-
-V0.4 ergänzt Static Serving um Streaming, einzelne HTTP-Byte-Ranges (`Range`), `ETag`, `Last-Modified` sowie `If-None-Match`/`If-Modified-Since`. Static Responses werden bei passendem `Accept-Encoding` gestreamt mit Brotli oder gzip komprimiert; Range-Antworten bleiben unkomprimiert. Response-Header und Redirects werden pro Route konfiguriert; Cache-Regeln sind dabei gewöhnliche Response-Header:
+Static Files werden gestreamt und unterstützen Range Requests, `ETag`,
+`Last-Modified`, Conditional Requests, gzip und Brotli. Response-Header,
+Fehlerseiten und Redirects sind pro Route konfigurierbar:
 
 ```toml
 [[routes]]
@@ -204,23 +157,60 @@ location = "https://example.com/new"
 status = 308
 ```
 
+## TLS und HTTP/3
+
+Mit aktiviertem TLS leitet Port 80 reguläre Anfragen auf HTTPS um und bedient
+nur ACME-HTTP-01-Challenges direkt. HTTP/2 wird auf dem TLS-Listener angeboten.
+`http3 = true` startet zusätzlich QUIC auf UDP/443 und fügt HTTPS-Antworten
+automatisch `Alt-Svc` hinzu, damit Browser auf HTTP/3 wechseln können.
+
+Für einen abweichenden UDP-Port:
+
 ```toml
-[[routes]]
-path_prefix = "/api"
-kind = "proxy"
-upstreams = [
-  "http://127.0.0.1:3000",
-  "http://127.0.0.1:3001",
-]
+[tls]
+enabled = true
+bind = "0.0.0.0:443"
+http3 = true
+quic_bind = "0.0.0.0:8443"
 ```
 
-Für Produktionsrouten sind Gewichtungen und Resilienzregeln konfigurierbar:
+Neben automatisch verwalteten Let's-Encrypt-Zertifikaten werden lokale
+PEM-Zertifikate und interne CAs unterstützt:
+
+```toml
+[[tls.certificates]]
+hosts = ["internal.example.com"]
+certificate = "/etc/webserver/certificates/local/internal.fullchain.pem"
+private_key = "/etc/webserver/certificates/local/internal.key.pem"
+```
+
+Für Wildcard-Zertifikate kann DNS-01 über den separat installierten
+[lego](https://go-acme.github.io/lego/dns/)-Client verwendet werden:
+
+```toml
+[tls.dns_challenge]
+command = "/usr/bin/lego"
+
+[[tls.dns_challenge.providers]]
+provider = "cloudflare"
+domains = ["example.com", "*.example.com"]
+credentials_file = "/etc/webserver/dns/cloudflare.env"
+```
+
+Private Schlüssel und DNS-Zugangsdaten müssen für andere Benutzer unlesbar
+sein; auf Linux ist für die Credentials-Datei üblicherweise `0600` passend.
+
+## Upstreams und Discovery
+
+Proxy-Routen unterstützen mehrere Upstreams, Round Robin, gewichtetes Round
+Robin, Least Connections, aktive und passive Health Checks, Retries mit Backoff
+und Limits je Upstream.
 
 ```toml
 [[routes]]
 path_prefix = "/api"
 kind = "proxy"
-load_balancing = "least_connections" # round_robin | weighted_round_robin | least_connections
+load_balancing = "least_connections"
 upstreams = [
   { url = "http://127.0.0.1:3000", weight = 3 },
   { url = "http://127.0.0.1:3001", weight = 1 },
@@ -228,8 +218,6 @@ upstreams = [
 retries = 2
 retry_backoff_ms = 100
 max_connections_per_upstream = 100
-base_path = "/v1"
-rewrite_prefix = "/internal"
 
 [routes.health_check]
 path = "/health"
@@ -237,139 +225,72 @@ interval_secs = 10
 timeout_secs = 3
 ```
 
-Aktive HTTP-Health-Checks erwarten einen 2xx-Status. Passive Fehler öffnen nach drei aufeinanderfolgenden Verbindungs- oder Timeout-Fehlern für 30 Sekunden einen Circuit Breaker. Normale Proxy-Requests werden bis zum bestehenden Request-Limit gepuffert und können deshalb mit exponentiellem Backoff wiederholt werden. WebSocket-Upgrades werden als bidirektionaler Stream durchgereicht.
-
-Sobald `tls.enabled = true` gesetzt ist, startet der Server zusätzlich auf Port 443. Für jede konfigurierte Site ohne lokales Zertifikat fordert er automatisch ein Let's-Encrypt-Zertifikat per HTTP-01 an, speichert es im `certificate_cache` und erneuert es automatisch. Port 80 bleibt dabei erforderlich: Nur `/.well-known/acme-challenge/...` wird dort für Let's Encrypt ausgeliefert, alle übrigen HTTP-Anfragen werden mit einem permanenten Redirect auf HTTPS weitergeleitet. DNS der jeweiligen Hosts muss vorher auf den Server zeigen und beide Ports müssen von außen erreichbar sein. Änderungen an TLS-Einstellungen oder Hostnamen werden erst nach einem Dienstneustart übernommen; Routen können weiter per Reload geändert werden.
-
-### DNS-01 und Wildcard-Zertifikate
-
-Für Wildcards oder Hosts ohne öffentlich erreichbaren Port 80 kann DNS-01 verwendet werden. Der Server integriert dafür den DNS-Provider-Client [lego](https://go-acme.github.io/lego/dns/); dessen Provider (etwa Cloudflare, Route 53 und DigitalOcean) und die CNAME-/NS-Delegation von `_acme-challenge` werden direkt unterstützt. `lego` muss installiert sein; Zugangsdaten bleiben in einer geschützten `KEY=VALUE`-Datei und werden nur für den gestarteten Provider-Prozess als Umgebungsvariablen gesetzt.
+Discovery kann statische Upstreams ergänzen oder vollständig ersetzen.
 
 ```toml
-[tls.dns_challenge]
-command = "/usr/bin/lego" # optional; Standard ist "lego"
+# DNS
+[routes.dns_discovery]
+host = "api.internal.example"
+port = 3000
 
-[[tls.dns_challenge.providers]]
-provider = "cloudflare"
-domains = ["example.com", "*.example.com"]
-credentials_file = "/etc/webserver/dns/cloudflare.env"
-# Optional: Resolver, die bei delegierten CNAME-/NS-Zonen abgefragt werden.
-resolvers = ["1.1.1.1:53", "8.8.8.8:53"]
+# Docker: benötigt nur lesenden Zugriff auf den Docker-Socket.
+[routes.docker_discovery]
+labels = { "webserver.discovery" = "api" }
+port = 3000
+socket = "/var/run/docker.sock"
+refresh_secs = 30
+
+# Kubernetes-Service-DNS, auch für Headless Services.
+[routes.kubernetes_discovery]
+service = "api"
+namespace = "production"
+port = 3000
+cluster_domain = "cluster.local"
 ```
 
-Für Cloudflare enthält die Credentials-Datei beispielsweise `CLOUDFLARE_DNS_API_TOKEN=...`. Sie muss dem Dienst lesbar sein und darf nicht für andere lesbar oder für Gruppe/andere schreibbar sein (unter Linux in der Regel `0600`). Beim ersten Start fordert der Server das Zertifikat an; bei weiteren Starts führt er sicher `lego renew` aus. Für eine vollständig automatische Erneuerung ohne Neustart sollte der Dienst regelmäßig neu gestartet werden, beispielsweise über einen systemd-Timer.
+## Sicherheit und Observability
 
-### Lokale Zertifikate und eigene CA
+- Limits für Header, Body, Requests pro IP und gleichzeitige Verbindungen
+- Allow-/Deny-Netze und vertrauenswürdige Proxy-Netze für `X-Forwarded-For`
+- CORS- sowie beliebige Response-Header-Regeln
+- JSON-Logs mit `WEBSERVER_LOG_FORMAT=json`
+- Prometheus-Endpunkt über `server.metrics_path`
+- OpenTelemetry über die üblichen `OTEL_EXPORTER_OTLP_*`-Umgebungsvariablen
+- Embedded Standardfehlerseiten für gängige 4xx- und 5xx-Statuscodes
 
-Lokale Zertifikate werden als PEM-Kette und PEM-Private-Key konfiguriert und per SNI dem jeweiligen Host zugeordnet. Das funktioniert genauso mit Zertifikaten einer eigenen internen CA; die vollständige Kette gehört in `certificate`.
+Metriken sollten ausschließlich über ein privates Netzwerk oder einen
+vertrauenswürdigen vorgeschalteten Proxy verfügbar sein.
 
-```toml
-[[tls.certificates]]
-hosts = ["internal.example.com"]
-certificate = "/etc/webserver/certificates/local/internal.example.com.fullchain.pem"
-private_key = "/etc/webserver/certificates/local/internal.example.com.key.pem"
-```
+## CLI
 
-Lokale Zertifikate gewinnen gegenüber ACME. Bestehen alle TLS-Sites aus lokalen Zertifikaten, ist keine `tls.email` erforderlich. Der Linux-Installer trennt `/etc/webserver/certificates/acme` (schreibbar für automatische Erneuerungen) von `/etc/webserver/certificates/local` (nur lesbar für den Dienst). Private Keys müssen reguläre Dateien sein, dürfen weder für andere lesbar noch für Gruppe/andere schreibbar sein. Empfohlene Installation:
+Neben `init`, `check` und `run` kann die CLI Sites und Routen verwalten:
 
 ```sh
-sudo install -m 640 -o root -g www-data fullchain.pem /etc/webserver/certificates/local/internal.example.com.fullchain.pem
-sudo install -m 640 -o root -g www-data privkey.pem /etc/webserver/certificates/local/internal.example.com.key.pem
+webserver site-add --host example.test
+webserver route-add --host example.test --path / --static ./public
+webserver route-add --host example.test --path /api --upstream http://127.0.0.1:3000
+webserver route-remove --host example.test --path /api
+webserver completion bash
 ```
 
-## Fehlerseiten
-
-Die Standardfehlerseiten fuer `400`, `403`, `404`, `405`, `411`, `413`, `431`, `500`, `502`, `503` und `504` liegen unter [assets/error-pages](assets/error-pages) und werden beim Build direkt in das Binary eingebettet. Sie funktionieren daher auch ohne zusaetzliche Dateien auf dem Server. Eigene konfigurierbare Fehlerseiten folgen spaeter.
-
-## Linux-Installation und systemd
-
-Ein Release-Binary wird mit folgendem Befehl erstellt:
+## Entwicklung
 
 ```sh
+cargo fmt --check
+cargo test --locked
+cargo clippy --locked -- -D warnings
 cargo build --locked --release
+```
+
+Für eine lokale Paketinstallation auf systemd-basierten Linux-Systemen:
+
+```sh
 sudo packaging/install.sh ./target/release/webserver
 ```
 
-Das Installationsskript verwendet den etablierten Systembenutzer und die Gruppe `www-data` (wie nginx und Apache auf Debian/Ubuntu), installiert das Binary nach `/usr/local/bin/webserver`, erzeugt die Standardverzeichnisse, installiert die systemd-Unit und aktiviert den Dienst. Falls `www-data` fehlt, wird das Systemkonto angelegt. Die produktive Konfiguration liegt unter `/etc/webserver/webserver.toml`; jede Site liegt unter `/etc/webserver/sites/*.conf`. Statische Dateien liegen standardmaessig in `/var/www/webserver/public`.
+## Roadmap
 
-`/usr/local/bin` liegt auf gängigen Linux-Systemen bereits im globalen `PATH`; deshalb ist kein Eintrag in `.bashrc` oder eine Shell-Alias-Datei erforderlich. Falls das Paket `bash-completion` installiert ist, richtet der Installer ausserdem Tab-Vervollständigung für `webserver` ein. Sie kann auch manuell erzeugt werden:
-
-```sh
-webserver completion bash > /usr/share/bash-completion/completions/webserver
-```
-
-```sh
-sudo systemctl status webserver
-sudo systemctl reload webserver  # laedt die Konfiguration neu
-sudo journalctl -u webserver -f
-```
-
-Auf Linux verarbeitet der Prozess `SIGHUP` als Konfigurationsreload. Bei ungültiger Konfiguration wird der Reload abgelehnt und die bisherige, funktionierende Konfiguration weiterverwendet. TLS-Einstellungen und die Liste der TLS-Hostnamen benötigen dagegen einen Neustart, damit Listener und ACME-Verwaltung konsistent neu aufgebaut werden. Der Installer reserviert Port 80 und 443 über `CAP_NET_BIND_SERVICE` für den Dienstbenutzer `www-data` und gibt diesem nur auf den Zertifikatsspeicher Schreibzugriff.
-
-## Windows Server
-
-Windows Server wird nativ unterstuetzt. Das Binary kann normal in PowerShell gestartet werden oder als echter Windows-Service laufen. Der Installer legt die folgenden Orte an:
-
-```text
-C:\Program Files\Webserver\webserver.exe
-C:\ProgramData\Webserver\webserver.toml
-C:\ProgramData\Webserver\sites\*.conf
-C:\inetpub\wwwroot\Webserver\public
-```
-
-In einer **als Administrator** gestarteten PowerShell:
-
-```powershell
-cargo build --locked --release
-.\packaging\windows\install.ps1 -BinaryPath .\target\release\webserver.exe
-Get-Service Webserver
-```
-
-Der Dienst läuft als `NT AUTHORITY\LOCAL SERVICE`; der Installer setzt auf Konfiguration und statische Inhalte die erforderlichen Leserechte sowie Schreibrechte ausschließlich auf `C:\ProgramData\Webserver\certificates`. Der Dienst kann wie jeder Windows-Service verwaltet werden:
-
-```powershell
-Restart-Service Webserver
-Stop-Service Webserver
-Get-Service Webserver
-```
-
-## Docker-APT-Repository
-
-Der APT-Repository-Container wird mit `apt-repo/` als eigenständigem Docker-Build-Kontext gebaut. Die Build-Stage klont den konfigurierten Quell-Branch und erstellt daraus Binary und Debian-Paket. Anschließend verwaltet `reprepro` das Repository, erzeugt `dists/`, `pool/`, `Release`, `InRelease` und `Release.gpg` und signiert die Metadaten. Das finale Image enthält ausschließlich nginx und die fertigen Repository-Dateien für `amd64` auf Port `8080`.
-
-Für den privaten Quell-Checkout wird ein BuildKit-Secret `github_token` mit einem GitHub Fine-grained Token benötigt, der nur **Contents: Read** für dieses Repository besitzt. Zusätzlich benötigt reprepro ein dediziertes, passwortloses APT-Signierschlüsselpaar. Der private Schlüssel wird als einzeiliges Base64-Build-Secret `apt_gpg_private_key_b64` hinterlegt; der Fingerprint wird als Build-Argument `APT_GPG_FINGERPRINT` gesetzt. Beide Secrets werden nur in der Build-Stage verwendet und gelangen nicht in das nginx-Image.
-
-```sh
-# Einmalig: dedizierten Signierschlüssel erstellen und dessen Fingerprint notieren.
-gpg --quick-generate-key 'Webserver APT Repository <packages@example.invalid>' rsa4096 sign 0
-gpg --list-secret-keys --keyid-format=long
-
-# Den Inhalt dieser einen Zeile als Dokploy-Build-Secret apt_gpg_private_key_b64 hinterlegen.
-gpg --armor --export-secret-keys FINGERPRINT | base64 -w 0
-```
-
-Lokal wird mit denselben Build-Inputs gebaut:
-
-```sh
-cd apt-repo
-docker build --secret id=github_token,src=./github-token \
-  --secret id=apt_gpg_private_key_b64,src=./apt-gpg-private-key.b64 \
-  --build-arg APT_GPG_FINGERPRINT=FINGERPRINT \
-  -t webserver-apt-repo .
-docker run --rm -p 8080:8080 webserver-apt-repo
-```
-
-Auf einem Debian-/Ubuntu-Client wird zuerst der veröffentlichte Schlüssel installiert, danach die signierte Quelle eingebunden:
-
-```sh
-curl -fsSL https://REPOSITORY-HOST/webserver-archive-keyring.gpg | \
-  sudo tee /usr/share/keyrings/webserver-archive-keyring.gpg >/dev/null
-echo 'deb [signed-by=/usr/share/keyrings/webserver-archive-keyring.gpg] https://REPOSITORY-HOST stable main' | \
-  sudo tee /etc/apt/sources.list.d/webserver.list
-sudo apt update
-sudo apt install webserver
-```
-
-## Releases
-
-Der Workflow [release.yml](.github/workflows/release.yml) baut bei einem Git-Tag wie `v0.1.0` ein Linux-x86_64-Release-Archiv mit Binary, Installer und systemd-Unit. Ein eigentlicher Paket-Repository-Feed (APT/RPM) ist noch nicht eingerichtet; das Archiv ist der sichere, einfache erste Distributionsweg.
+V0.6 ist abgeschlossen. Als Nächstes folgen eine lokale Verwaltungs-API
+(V0.7), eine einheitliche Verwaltungs- und Zugriffsschicht (V0.8), ein
+Web-Dashboard (V0.9) und danach die stabile V1.0-Oberfläche. Details stehen in
+[TODO.md](TODO.md).

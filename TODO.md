@@ -64,13 +64,32 @@ Dieses Dokument ist der Arbeitsplan für den Server. Die erste HTTP/1.1-Version 
 - [x] HTTP/2
 - [x] HTTP/3 / QUIC
 - [x] DNS-basierte Upstream-Discovery
-- [ ] Docker-Discovery
-- [ ] Kubernetes-/Service-Discovery als optionales Modul
-- [ ] Zero-Downtime-Binary-Upgrades
+- [x] Docker-Discovery
+- [x] Kubernetes-/Service-Discovery als optionales Modul
+- [x] Zero-Downtime-Binary-Upgrades
 
-## Langfristig — Management-Oberflaeche
+## v0.7 — Lokale Verwaltungs-API
 
 - [ ] Lokale, authentifizierte Admin-API
+- [ ] API-Endpunkte für Sites, Routen, Upstreams, Zertifikate, Logs und Metriken
+- [ ] Sichere lokale Standardbindung; keine externe Freigabe ohne explizite Konfiguration
+- [ ] API-Tests und OpenAPI-Dokumentation
+
+## v0.8 — Einheitliche Verwaltung und Zugriffsschutz
+
 - [ ] Dieselbe Management-Schicht für CLI und API
+- [ ] Rollen und Authentifizierung für nicht-lokale API-Freigaben
+- [ ] Audit-Log für jede schreibende Verwaltungsaktion
+- [ ] Migrations- und Kompatibilitätsregeln für die Verwaltungs-API
+
+## v0.9 — Web-Dashboard
+
 - [ ] Web-Dashboard für Sites, Routen, Upstreams, Zertifikate, Logs und Metriken
-- [ ] Rollen, Authentifizierung und Audit-Log vor jeder nicht-lokalen Freigabe
+- [ ] Dashboard-Anmeldung über die Verwaltungs-API und Rollenmodell
+- [ ] Betriebsansichten für Health Checks, Tracing und Prometheus-Metriken
+
+## v1.0 — Stabile Server- und Verwaltungsoberfläche
+
+- [ ] Stabile, dokumentierte Konfigurations-, CLI- und API-Verträge
+- [ ] Upgrade- und Migrationsleitfaden für produktive Installationen
+- [ ] Vollständige End-to-End-, Sicherheits- und Release-Regressionstests

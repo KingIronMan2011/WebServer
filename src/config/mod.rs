@@ -214,6 +214,10 @@ pub enum RouteTarget {
         health_check: Option<HealthCheckConfig>,
         #[serde(default)]
         dns_discovery: Option<DnsDiscoveryConfig>,
+        #[serde(default)]
+        docker_discovery: Option<DockerDiscoveryConfig>,
+        #[serde(default)]
+        kubernetes_discovery: Option<KubernetesDiscoveryConfig>,
     },
     Redirect {
         location: String,
@@ -228,6 +232,37 @@ pub struct DnsDiscoveryConfig {
     pub port: u16,
     #[serde(default = "default_discovery_scheme")]
     pub scheme: String,
+}
+
+/// Finds running Docker containers through the local Docker Engine socket.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DockerDiscoveryConfig {
+    /// Only containers carrying every configured label are selected.
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
+    /// The container-internal TCP port exposed by the discovered application.
+    pub port: u16,
+    #[serde(default = "default_discovery_scheme")]
+    pub scheme: String,
+    /// Docker Engine Unix socket. This is only used on Unix hosts.
+    #[serde(default = "default_docker_socket")]
+    pub socket: PathBuf,
+    #[serde(default = "default_discovery_refresh_secs")]
+    pub refresh_secs: u64,
+}
+
+/// Resolves a Kubernetes Service through cluster DNS. Headless Services yield
+/// their individual endpoints while normal Services yield the Service address.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct KubernetesDiscoveryConfig {
+    pub service: String,
+    #[serde(default = "default_kubernetes_namespace")]
+    pub namespace: String,
+    pub port: u16,
+    #[serde(default = "default_discovery_scheme")]
+    pub scheme: String,
+    #[serde(default = "default_kubernetes_cluster_domain")]
+    pub cluster_domain: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -329,6 +364,18 @@ fn default_cors_methods() -> Vec<String> {
 }
 fn default_discovery_scheme() -> String {
     "http".into()
+}
+fn default_docker_socket() -> PathBuf {
+    PathBuf::from("/var/run/docker.sock")
+}
+fn default_discovery_refresh_secs() -> u64 {
+    30
+}
+fn default_kubernetes_namespace() -> String {
+    "default".into()
+}
+fn default_kubernetes_cluster_domain() -> String {
+    "cluster.local".into()
 }
 fn default_index_file() -> String {
     "index.html".into()
@@ -689,10 +736,16 @@ impl Config {
                 rewrite_prefix,
                 health_check,
                 dns_discovery,
+                docker_discovery,
+                kubernetes_discovery,
                 ..
             } => {
                 let targets = proxy_upstreams(upstream.as_deref(), upstreams);
-                if targets.is_empty() && dns_discovery.is_none() {
+                if targets.is_empty()
+                    && dns_discovery.is_none()
+                    && docker_discovery.is_none()
+                    && kubernetes_discovery.is_none()
+                {
                     return Err(Error::Config(
                         "proxy route needs at least one upstream".into(),
                     ));
@@ -703,6 +756,26 @@ impl Config {
                 {
                     return Err(Error::Config(
                         "dns_discovery needs a host and http or https scheme".into(),
+                    ));
+                }
+                if let Some(discovery) = docker_discovery
+                    && (discovery.port == 0
+                        || discovery.refresh_secs == 0
+                        || !matches!(discovery.scheme.as_str(), "http" | "https"))
+                {
+                    return Err(Error::Config(
+                        "docker_discovery needs a port, an http or https scheme, and a non-zero refresh interval".into(),
+                    ));
+                }
+                if let Some(discovery) = kubernetes_discovery
+                    && (discovery.service.is_empty()
+                        || discovery.namespace.is_empty()
+                        || discovery.cluster_domain.is_empty()
+                        || discovery.port == 0
+                        || !matches!(discovery.scheme.as_str(), "http" | "https"))
+                {
+                    return Err(Error::Config(
+                        "kubernetes_discovery needs a service, namespace, cluster domain, port, and http or https scheme".into(),
                     ));
                 }
                 let mut unique = HashSet::new();
@@ -1023,6 +1096,8 @@ mod tests {
                         rewrite_prefix: None,
                         health_check: None,
                         dns_discovery: None,
+                        docker_discovery: None,
+                        kubernetes_discovery: None,
                     },
                 },
             )

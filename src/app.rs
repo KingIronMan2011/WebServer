@@ -76,6 +76,8 @@ pub async fn run(cli: Cli) -> Result<()> {
                     rewrite_prefix: None,
                     health_check: None,
                     dns_discovery: None,
+                    docker_discovery: None,
+                    kubernetes_discovery: None,
                 },
                 _ => {
                     return Err(crate::error::Error::Config(

@@ -24,6 +24,19 @@ pub fn spawn(
     rustls.alpn_protocols = vec![b"h3".to_vec()];
     let crypto = QuicServerConfig::try_from(rustls).map_err(|error| error.to_string())?;
     let server_config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+    #[cfg(unix)]
+    let endpoint = {
+        let socket = crate::server::listener::bind_udp(bind).map_err(|error| error.to_string())?;
+        let runtime = quinn::default_runtime().ok_or("no QUIC runtime available")?;
+        quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            Some(server_config),
+            socket,
+            runtime,
+        )
+        .map_err(|error| error.to_string())?
+    };
+    #[cfg(not(unix))]
     let endpoint = quinn::Endpoint::server(server_config, bind).map_err(|error| error.to_string())?;
     let address = endpoint.local_addr().map_err(|error| error.to_string())?;
     tracing::info!(%address, "listening for HTTP/3 connections over QUIC");

@@ -6,6 +6,9 @@ use std::sync::{
 };
 
 #[cfg(unix)]
+use std::{process::Command, time::Duration};
+
+#[cfg(unix)]
 use std::path::PathBuf;
 
 use hyper::service::service_fn;
@@ -23,7 +26,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{config::Config, error::Result, server::connection, tls::TlsManager, upstream};
 
 pub async fn run(config: Config) -> Result<()> {
-    let listener = TcpListener::bind(config.server.bind).await?;
+    let listener = bind_tcp(config.server.bind).await?;
     #[cfg(unix)]
     let config_path = config.source_path().to_path_buf();
     let max_header_bytes = config.server.max_header_bytes;
@@ -77,7 +80,7 @@ pub async fn run_service(
     config: Config,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
-    let listener = TcpListener::bind(config.server.bind).await?;
+    let listener = bind_tcp(config.server.bind).await?;
     let max_header_bytes = config.server.max_header_bytes;
     let tls = start_tls(&config).await?;
     let state = Arc::new(RwLock::new(config));
@@ -139,10 +142,20 @@ async fn run_unix(
     use tokio::signal::unix::{SignalKind, signal};
 
     let mut reload = signal(SignalKind::hangup())?;
+    let mut upgrade = signal(SignalKind::user_defined2())?;
     loop {
         tokio::select! {
             result = accept_one(&listener, &state, tls.clone(), Arc::clone(&connections), max_header_bytes) => result?,
             _ = reload.recv() => reload_config(&state, &config_path).await,
+            _ = upgrade.recv() => {
+                match spawn_upgrade_child().await {
+                    Ok(()) => {
+                        tracing::info!("replacement process is running; draining existing connections");
+                        return Ok(());
+                    }
+                    Err(error) => tracing::error!(%error, "binary upgrade rejected; keeping current process"),
+                }
+            }
             signal = tokio::signal::ctrl_c() => {
                 signal.expect("failed to install Ctrl+C handler");
                 tracing::info!("received shutdown signal");
@@ -222,7 +235,7 @@ async fn spawn_tls_listener(
         return Ok(None);
     };
     let bind = state.read().await.tls.bind;
-    let listener = TcpListener::bind(bind).await?;
+    let listener = bind_tcp(bind).await?;
     tracing::info!(address = %listener.local_addr()?, "listening for HTTPS connections");
     let state = Arc::clone(state);
     Ok(Some(tokio::spawn(async move {
@@ -267,6 +280,59 @@ async fn spawn_tls_listener(
             });
         }
     })))
+}
+
+/// Binds a TCP listener with `SO_REUSEPORT` on Unix. During a USR2 upgrade the
+/// replacement can therefore bind first, after which this process drains its
+/// established connections without an accept gap.
+async fn bind_tcp(bind: std::net::SocketAddr) -> Result<TcpListener> {
+    #[cfg(unix)]
+    {
+        use socket2::{Domain, Protocol, Socket, Type};
+
+        let socket = Socket::new(Domain::for_address(bind), Type::STREAM, Some(Protocol::TCP))?;
+        socket.set_reuse_address(true)?;
+        socket.set_reuse_port(true)?;
+        socket.bind(&bind.into())?;
+        socket.listen(1024)?;
+        socket.set_nonblocking(true)?;
+        return Ok(TcpListener::from_std(socket.into())?);
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(TcpListener::bind(bind).await?)
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn bind_udp(bind: std::net::SocketAddr) -> Result<std::net::UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+
+    let socket = Socket::new(Domain::for_address(bind), Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    socket.set_reuse_port(true)?;
+    socket.bind(&bind.into())?;
+    socket.set_nonblocking(true)?;
+    Ok(socket.into())
+}
+
+#[cfg(unix)]
+async fn spawn_upgrade_child() -> std::result::Result<(), std::io::Error> {
+    let executable = std::env::current_exe()?;
+    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    let mut child = Command::new(executable)
+        .args(arguments)
+        .env("WEBSERVER_UPGRADE_CHILD", "1")
+        .spawn()?;
+    // A failed bind/configuration normally terminates immediately. Keep serving
+    // in that case instead of retiring the healthy generation.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    if let Some(status) = child.try_wait()? {
+        return Err(std::io::Error::other(format!(
+            "replacement process exited early with {status}"
+        )));
+    }
+    Ok(())
 }
 
 async fn spawn_quic_listener(

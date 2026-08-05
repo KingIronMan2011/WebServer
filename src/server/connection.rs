@@ -123,6 +123,8 @@ where
                     retries,
                     retry_backoff_ms,
                     dns_discovery,
+                    docker_discovery,
+                    kubernetes_discovery,
                     ..
                 } => {
                     let mut targets: Vec<(String, u32)> =
@@ -133,6 +135,22 @@ where
                     if let Some(discovery) = dns_discovery {
                         targets.extend(
                             crate::upstream::discovery::dns(discovery)
+                                .await
+                                .into_iter()
+                                .map(|url| (url, 1)),
+                        );
+                    }
+                    if let Some(discovery) = docker_discovery {
+                        targets.extend(
+                            crate::upstream::discovery::docker(discovery)
+                                .await
+                                .into_iter()
+                                .map(|url| (url, 1)),
+                        );
+                    }
+                    if let Some(discovery) = kubernetes_discovery {
+                        targets.extend(
+                            crate::upstream::discovery::kubernetes(discovery)
                                 .await
                                 .into_iter()
                                 .map(|url| (url, 1)),
