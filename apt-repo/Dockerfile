@@ -42,4 +42,6 @@ RUN set -eux; \
 FROM nginx:alpine
 COPY --from=repository /repo /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+# The base image's welcome page would otherwise take precedence over autoindex.
+RUN rm -f /usr/share/nginx/html/index.html
 EXPOSE 8080
