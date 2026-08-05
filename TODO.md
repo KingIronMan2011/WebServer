@@ -77,10 +77,10 @@ Dieses Dokument ist der Arbeitsplan für den Server. Die erste HTTP/1.1-Version 
 
 ## v0.8 — Einheitliche Verwaltung und Zugriffsschutz
 
-- [ ] Dieselbe Management-Schicht für CLI und API
-- [ ] Rollen und Authentifizierung für nicht-lokale API-Freigaben
-- [ ] Audit-Log für jede schreibende Verwaltungsaktion
-- [ ] Migrations- und Kompatibilitätsregeln für die Verwaltungs-API
+- [x] Dieselbe Management-Schicht für CLI und API
+- [x] Rollen und Authentifizierung für nicht-lokale API-Freigaben
+- [x] Audit-Log für jede schreibende Verwaltungsaktion
+- [x] Migrations- und Kompatibilitätsregeln für die Verwaltungs-API
 
 ## v0.9 — Web-Dashboard
 

@@ -59,15 +59,15 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Init { config } => write_example_config(&config),
         Command::SiteAdd { config, host } => {
             let mut config = Config::load(&config)?;
-            config.add_site(host.clone())?;
-            config.save()?;
+            crate::management::add_site(&mut config, host.clone())?;
+            audit_cli(&config, "site.created", &host).await?;
             println!("Added site: {host}");
             Ok(())
         }
         Command::SiteRemove { config, host } => {
             let mut config = Config::load(&config)?;
-            config.remove_site(&host)?;
-            config.save()?;
+            crate::management::remove_site(&mut config, &host)?;
+            audit_cli(&config, "site.deleted", &host).await?;
             println!("Removed site: {host}");
             Ok(())
         }
@@ -116,7 +116,8 @@ pub async fn run(cli: Cli) -> Result<()> {
                     ));
                 }
             };
-            config.add_route(
+            crate::management::add_route(
+                &mut config,
                 &host,
                 RouteConfig {
                     path_prefix: path.clone(),
@@ -126,14 +127,14 @@ pub async fn run(cli: Cli) -> Result<()> {
                     target,
                 },
             )?;
-            config.save()?;
+            audit_cli(&config, "route.created", &format!("{host}{path}")).await?;
             println!("Added route {path} to {host}");
             Ok(())
         }
         Command::RouteRemove { config, host, path } => {
             let mut config = Config::load(&config)?;
-            config.remove_route(&host, &path)?;
-            config.save()?;
+            crate::management::remove_route(&mut config, &host, &path)?;
+            audit_cli(&config, "route.deleted", &format!("{host}{path}")).await?;
             println!("Removed route {path} from {host}");
             Ok(())
         }
@@ -147,6 +148,13 @@ pub async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
     }
+}
+
+async fn audit_cli(config: &Config, action: &str, target: &str) -> Result<()> {
+    if config.admin.enabled {
+        crate::admin::audit_local(&config.admin.database, action, target).await?;
+    }
+    Ok(())
 }
 
 fn write_example_config(path: &Path) -> Result<()> {

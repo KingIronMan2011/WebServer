@@ -19,7 +19,7 @@ use argon2::{
 use axum::{
     Json, Router,
     extract::{ConnectInfo, Path as AxumPath, Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
     response::IntoResponse,
     routing::{delete, get, post},
 };
@@ -35,10 +35,12 @@ use crate::{
     error::{Error, Result},
 };
 use tower::Service;
+use tower_http::set_header::SetResponseHeaderLayer;
 
 const SESSION_COOKIE: &str = "__Host-webserver_admin";
 const SETUP_GRANT_LIFETIME: Duration = Duration::from_secs(15 * 60);
 const SESSION_LIFETIME: Duration = Duration::from_secs(8 * 60 * 60);
+const API_VERSION: u32 = 1;
 
 #[derive(Clone)]
 pub struct AdminState {
@@ -51,6 +53,42 @@ pub struct AdminState {
 struct AttemptBucket {
     failures: u8,
     retry_after: Instant,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Role {
+    Admin,
+    Operator,
+    Viewer,
+}
+
+impl Role {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "admin" => Some(Self::Admin),
+            "operator" => Some(Self::Operator),
+            "viewer" => Some(Self::Viewer),
+            _ => None,
+        }
+    }
+
+    fn can_write(self) -> bool {
+        matches!(self, Self::Admin | Self::Operator)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            Self::Operator => "operator",
+            Self::Viewer => "viewer",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Principal {
+    user_id: String,
+    role: Role,
 }
 
 #[derive(Debug, Serialize)]
@@ -86,6 +124,7 @@ struct LoginRequest {
 struct LoginResponse {
     password_change_required: bool,
     passkey_enrolment_required: bool,
+    role: &'static str,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +165,18 @@ struct AuditEntry {
     action: String,
     target: String,
     success: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateUserRequest {
+    username: String,
+    password: String,
+    role: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateRoleRequest {
+    role: String,
 }
 
 /// Starts a TLS-only admin listener. It is only invoked after local `web-init`
@@ -191,7 +242,10 @@ fn router(state: AdminState) -> Router {
         .route("/api/v1/health", get(health))
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/logout", post(logout))
+        .route("/api/v1/auth/me", get(current_user))
         .route("/api/v1/auth/password", post(change_password))
+        .route("/api/v1/users", get(list_users).post(create_user))
+        .route("/api/v1/users/{username}/role", post(update_user_role))
         .route("/api/v1/sites", get(list_sites).post(create_site))
         .route("/api/v1/sites/{host}", delete(delete_site))
         .route(
@@ -204,6 +258,10 @@ fn router(state: AdminState) -> Router {
         .route("/api/v1/logs", get(list_audit_log))
         .route("/api/v1/metrics", get(metrics))
         .route("/api/v1/openapi.json", get(openapi))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("x-webserver-api-version"),
+            HeaderValue::from_static("1"),
+        ))
         .with_state(state)
 }
 
@@ -228,7 +286,7 @@ async fn login(
         );
     }
     let row = match sqlx::query(
-        "SELECT id, password_hash, password_change_required FROM admin_users WHERE username = ?",
+        "SELECT id, password_hash, password_change_required, role FROM admin_users WHERE username = ?",
     )
     .bind(&input.username)
     .fetch_optional(&state.database)
@@ -262,6 +320,14 @@ async fn login(
         );
     }
     let user_id: String = row.get("id");
+    let Some(role) = Role::parse(row.get::<String, _>("role").as_str()) else {
+        tracing::error!(%user_id, "admin account has an invalid role");
+        return ApiError::response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "internal server error",
+        );
+    };
     let password_change_required: i64 = row.get("password_change_required");
     if password_change_required != 0
         && !consume_setup_grant(&state.database, &user_id, input.setup_code.as_deref()).await
@@ -311,9 +377,177 @@ async fn login(
         Json(LoginResponse {
             password_change_required: password_change_required != 0,
             passkey_enrolment_required: password_change_required != 0,
+            role: role.as_str(),
         }),
     )
         .into_response()
+}
+
+async fn current_user(
+    State(state): State<AdminState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    match authenticated_principal(&state.database, &jar, &headers).await {
+        Some(principal) => {
+            Json(serde_json::json!({ "role": principal.role.as_str() })).into_response()
+        }
+        None => ApiError::response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "authentication required",
+        ),
+    }
+}
+
+async fn list_users(
+    State(state): State<AdminState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    let Some(principal) = authenticated_principal(&state.database, &jar, &headers).await else {
+        return ApiError::response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "authentication required",
+        );
+    };
+    if principal.role != Role::Admin {
+        return ApiError::response(StatusCode::FORBIDDEN, "forbidden", "admin role required");
+    }
+    match sqlx::query("SELECT username, role FROM admin_users ORDER BY username").fetch_all(&state.database).await {
+        Ok(rows) => Json(rows.into_iter().map(|row| serde_json::json!({ "username": row.get::<String, _>("username"), "role": row.get::<String, _>("role") })).collect::<Vec<_>>()).into_response(),
+        Err(error) => { tracing::error!(%error, "could not list admin users"); ApiError::response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "internal server error") }
+    }
+}
+
+async fn create_user(
+    State(state): State<AdminState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(input): Json<CreateUserRequest>,
+) -> axum::response::Response {
+    let Some(principal) = authenticated_principal(&state.database, &jar, &headers).await else {
+        return ApiError::response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "authentication required",
+        );
+    };
+    if principal.role != Role::Admin {
+        return ApiError::response(StatusCode::FORBIDDEN, "forbidden", "admin role required");
+    }
+    let Some(role) = Role::parse(&input.role) else {
+        return ApiError::response(
+            StatusCode::BAD_REQUEST,
+            "invalid_role",
+            "role must be admin, operator, or viewer",
+        );
+    };
+    if input.username.trim().is_empty() || input.username.len() > 128 || input.password.len() < 16 {
+        return ApiError::response(
+            StatusCode::BAD_REQUEST,
+            "invalid_user",
+            "username or password is invalid",
+        );
+    }
+    let hash = match hash_password(&input.password) {
+        Ok(hash) => hash,
+        Err(_) => {
+            return ApiError::response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "internal server error",
+            );
+        }
+    };
+    let result = sqlx::query("INSERT INTO admin_users (id, username, password_hash, password_change_required, role) VALUES (?, ?, ?, 1, ?)")
+        .bind(Uuid::new_v4().to_string()).bind(input.username.trim()).bind(hash).bind(role.as_str()).execute(&state.database).await;
+    if let Err(error) = result {
+        tracing::warn!(%error, "rejected admin user creation");
+        return ApiError::response(
+            StatusCode::CONFLICT,
+            "user_exists",
+            "user could not be created",
+        );
+    }
+    audit(
+        &state.database,
+        Some(&principal.user_id),
+        peer.ip(),
+        "user.created",
+        "user",
+        true,
+    )
+    .await;
+    StatusCode::CREATED.into_response()
+}
+
+async fn update_user_role(
+    State(state): State<AdminState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    AxumPath(username): AxumPath<String>,
+    Json(input): Json<UpdateRoleRequest>,
+) -> axum::response::Response {
+    let Some(principal) = authenticated_principal(&state.database, &jar, &headers).await else {
+        return ApiError::response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "authentication required",
+        );
+    };
+    if principal.role != Role::Admin {
+        return ApiError::response(StatusCode::FORBIDDEN, "forbidden", "admin role required");
+    }
+    let Some(role) = Role::parse(&input.role) else {
+        return ApiError::response(
+            StatusCode::BAD_REQUEST,
+            "invalid_role",
+            "role must be admin, operator, or viewer",
+        );
+    };
+    if username == "" {
+        return ApiError::response(
+            StatusCode::BAD_REQUEST,
+            "invalid_user",
+            "username is invalid",
+        );
+    }
+    match sqlx::query("UPDATE admin_users SET role = ? WHERE username = ?")
+        .bind(role.as_str())
+        .bind(&username)
+        .execute(&state.database)
+        .await
+    {
+        Ok(result) if result.rows_affected() == 1 => {
+            audit(
+                &state.database,
+                Some(&principal.user_id),
+                peer.ip(),
+                "user.role_changed",
+                &username,
+                true,
+            )
+            .await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(_) => ApiError::response(
+            StatusCode::NOT_FOUND,
+            "user_not_found",
+            "user does not exist",
+        ),
+        Err(error) => {
+            tracing::error!(%error, "could not update user role");
+            ApiError::response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "internal server error",
+            )
+        }
+    }
 }
 
 async fn logout(
@@ -443,33 +677,18 @@ async fn list_sites(
 
 async fn create_site(
     State(state): State<AdminState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     jar: CookieJar,
     headers: HeaderMap,
     Json(input): Json<CreateSiteRequest>,
 ) -> axum::response::Response {
-    let Some(user_id) = authenticated_user(&state.database, &jar, &headers).await else {
-        return ApiError::response(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "authentication required",
-        );
+    let principal = match write_principal(&state.database, &jar, &headers).await {
+        Ok(principal) => principal,
+        Err(response) => return response,
     };
     let mut active = state.config.write().await;
     let mut config = active.clone();
-    if let Err(error) = config.add_site(input.host) {
-        tracing::warn!(%error, "rejected admin site creation");
-        return ApiError::response(
-            StatusCode::BAD_REQUEST,
-            "invalid_site",
-            "site configuration is invalid",
-        );
-    }
-    let host = config.sites.last().expect("site was added").host.clone();
-    if let Err(error) = config
-        .add_route(&host, input.route)
-        .and_then(|_| config.validate())
-        .and_then(|_| config.save())
-    {
+    if let Err(error) = crate::management::create_site(&mut config, input.host, input.route) {
         tracing::warn!(%error, "rejected admin site creation");
         return ApiError::response(
             StatusCode::BAD_REQUEST,
@@ -480,8 +699,8 @@ async fn create_site(
     *active = config;
     audit(
         &state.database,
-        Some(&user_id),
-        "0.0.0.0".parse().unwrap(),
+        Some(&principal.user_id),
+        peer.ip(),
         "site.created",
         "site",
         true,
@@ -523,25 +742,19 @@ async fn list_routes(
 
 async fn create_route(
     State(state): State<AdminState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     jar: CookieJar,
     headers: HeaderMap,
     AxumPath(host): AxumPath<String>,
     Json(route): Json<RouteConfig>,
 ) -> axum::response::Response {
-    let Some(user_id) = authenticated_user(&state.database, &jar, &headers).await else {
-        return ApiError::response(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "authentication required",
-        );
+    let principal = match write_principal(&state.database, &jar, &headers).await {
+        Ok(principal) => principal,
+        Err(response) => return response,
     };
     let mut active = state.config.write().await;
     let mut config = active.clone();
-    if let Err(error) = config
-        .add_route(&host, route)
-        .and_then(|_| config.validate())
-        .and_then(|_| config.save())
-    {
+    if let Err(error) = crate::management::add_route(&mut config, &host, route) {
         tracing::warn!(%error, "rejected admin route creation");
         return ApiError::response(
             StatusCode::BAD_REQUEST,
@@ -552,8 +765,8 @@ async fn create_route(
     *active = config;
     audit(
         &state.database,
-        Some(&user_id),
-        "0.0.0.0".parse().unwrap(),
+        Some(&principal.user_id),
+        peer.ip(),
         "route.created",
         &host,
         true,
@@ -564,25 +777,19 @@ async fn create_route(
 
 async fn delete_route(
     State(state): State<AdminState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     jar: CookieJar,
     headers: HeaderMap,
     AxumPath(host): AxumPath<String>,
     Query(query): Query<RouteQuery>,
 ) -> axum::response::Response {
-    let Some(user_id) = authenticated_user(&state.database, &jar, &headers).await else {
-        return ApiError::response(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "authentication required",
-        );
+    let principal = match write_principal(&state.database, &jar, &headers).await {
+        Ok(principal) => principal,
+        Err(response) => return response,
     };
     let mut active = state.config.write().await;
     let mut config = active.clone();
-    if let Err(error) = config
-        .remove_route(&host, &query.path_prefix)
-        .and_then(|_| config.validate())
-        .and_then(|_| config.save())
-    {
+    if let Err(error) = crate::management::remove_route(&mut config, &host, &query.path_prefix) {
         tracing::warn!(%error, "rejected admin route deletion");
         return ApiError::response(
             StatusCode::BAD_REQUEST,
@@ -593,8 +800,8 @@ async fn delete_route(
     *active = config;
     audit(
         &state.database,
-        Some(&user_id),
-        "0.0.0.0".parse().unwrap(),
+        Some(&principal.user_id),
+        peer.ip(),
         "route.deleted",
         &host,
         true,
@@ -712,19 +919,17 @@ async fn list_audit_log(
 
 async fn delete_site(
     State(state): State<AdminState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     jar: CookieJar,
     headers: HeaderMap,
     AxumPath(host): AxumPath<String>,
 ) -> axum::response::Response {
-    let Some(user_id) = authenticated_user(&state.database, &jar, &headers).await else {
-        return ApiError::response(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "authentication required",
-        );
+    let principal = match write_principal(&state.database, &jar, &headers).await {
+        Ok(principal) => principal,
+        Err(response) => return response,
     };
     let mut config = state.config.write().await;
-    if let Err(error) = config.remove_site(&host) {
+    if let Err(error) = crate::management::remove_site(&mut config, &host) {
         tracing::warn!(%error, "rejected admin site deletion");
         return ApiError::response(
             StatusCode::NOT_FOUND,
@@ -734,8 +939,8 @@ async fn delete_site(
     }
     audit(
         &state.database,
-        Some(&user_id),
-        "0.0.0.0".parse().unwrap(),
+        Some(&principal.user_id),
+        peer.ip(),
         "site.deleted",
         "site",
         true,
@@ -807,15 +1012,41 @@ pub async fn bootstrap(
     }
     let id = Uuid::new_v4().to_string();
     let password_hash = hash_password(password)?;
-    sqlx::query("INSERT INTO admin_users (id, username, password_hash, password_change_required) VALUES (?, ?, ?, 1)")
+    sqlx::query("INSERT INTO admin_users (id, username, password_hash, password_change_required, role) VALUES (?, ?, ?, 1, 'admin')")
         .bind(&id).bind(username).bind(password_hash).execute(&database).await.map_err(sql_error)?;
     sqlx::query("INSERT INTO admin_setup_grants (code_hash, user_id, expires_at) VALUES (?, ?, ?)")
         .bind(secret_hash(setup_code))
-        .bind(id)
+        .bind(&id)
         .bind(unix_after(SETUP_GRANT_LIFETIME))
         .execute(&database)
         .await
         .map_err(sql_error)?;
+    audit(
+        &database,
+        Some(&id),
+        "127.0.0.1".parse().expect("loopback address"),
+        "admin.bootstrap",
+        "admin",
+        true,
+    )
+    .await;
+    Ok(())
+}
+
+/// Records a successful management action performed through the local CLI.
+/// The CLI is a first-class management client and writes to the same audit log
+/// as the remote API.
+pub async fn audit_local(database_path: &Path, action: &str, target: &str) -> Result<()> {
+    let database = open_database(database_path).await?;
+    audit(
+        &database,
+        None,
+        "127.0.0.1".parse().expect("loopback address"),
+        action,
+        target,
+        true,
+    )
+    .await;
     Ok(())
 }
 
@@ -836,10 +1067,29 @@ async fn open_database(path: &Path) -> Result<SqlitePool> {
         .execute(&pool)
         .await
         .map_err(sql_error)?;
-    sqlx::query("CREATE TABLE IF NOT EXISTS admin_users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, password_change_required INTEGER NOT NULL DEFAULT 1)").execute(&pool).await.map_err(sql_error)?;
+    sqlx::query("CREATE TABLE IF NOT EXISTS admin_schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)").execute(&pool).await.map_err(sql_error)?;
+    sqlx::query("CREATE TABLE IF NOT EXISTS admin_users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, password_change_required INTEGER NOT NULL DEFAULT 1, role TEXT NOT NULL DEFAULT 'admin' CHECK(role IN ('admin', 'operator', 'viewer')))").execute(&pool).await.map_err(sql_error)?;
     sqlx::query("CREATE TABLE IF NOT EXISTS admin_setup_grants (code_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL)").execute(&pool).await.map_err(sql_error)?;
     sqlx::query("CREATE TABLE IF NOT EXISTS admin_sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL)").execute(&pool).await.map_err(sql_error)?;
     sqlx::query("CREATE TABLE IF NOT EXISTS admin_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, user_id TEXT, source_ip TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, success INTEGER NOT NULL)").execute(&pool).await.map_err(sql_error)?;
+    let columns = sqlx::query("PRAGMA table_info(admin_users)")
+        .fetch_all(&pool)
+        .await
+        .map_err(sql_error)?;
+    if !columns
+        .iter()
+        .any(|column| column.get::<String, _>("name") == "role")
+    {
+        sqlx::query("ALTER TABLE admin_users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin' CHECK(role IN ('admin', 'operator', 'viewer'))").execute(&pool).await.map_err(sql_error)?;
+    }
+    sqlx::query(
+        "INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at) VALUES (?, ?)",
+    )
+    .bind(API_VERSION as i64)
+    .bind(unix_after(Duration::ZERO))
+    .execute(&pool)
+    .await
+    .map_err(sql_error)?;
     Ok(pool)
 }
 
@@ -918,6 +1168,48 @@ async fn authenticated_user(
     .await
     .ok()
     .flatten()
+}
+
+async fn authenticated_principal(
+    database: &SqlitePool,
+    jar: &CookieJar,
+    headers: &HeaderMap,
+) -> Option<Principal> {
+    let token = session_token(jar, headers)?;
+    let row = sqlx::query(
+        "SELECT admin_sessions.user_id, admin_users.role FROM admin_sessions JOIN admin_users ON admin_users.id = admin_sessions.user_id WHERE admin_sessions.token_hash = ? AND admin_sessions.expires_at >= ?",
+    )
+    .bind(secret_hash(token))
+    .bind(unix_after(Duration::ZERO))
+    .fetch_optional(database)
+    .await
+    .ok()??;
+    Some(Principal {
+        user_id: row.get("user_id"),
+        role: Role::parse(row.get::<String, _>("role").as_str())?,
+    })
+}
+
+async fn write_principal(
+    database: &SqlitePool,
+    jar: &CookieJar,
+    headers: &HeaderMap,
+) -> std::result::Result<Principal, axum::response::Response> {
+    let Some(principal) = authenticated_principal(database, jar, headers).await else {
+        return Err(ApiError::response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "authentication required",
+        ));
+    };
+    if !principal.role.can_write() {
+        return Err(ApiError::response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "role cannot modify configuration",
+        ));
+    }
+    Ok(principal)
 }
 async fn audit(
     database: &SqlitePool,

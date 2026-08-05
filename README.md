@@ -277,6 +277,18 @@ webserver completion bash
 
 ## Entwicklung
 
+### Verwaltungs-API-Kompatibilität
+
+Die Verwaltungs-API ist unter `/api/v1` versioniert. Nicht-brechende Felder
+und Endpunkte können innerhalb von `v1` ergänzt werden; Umbenennungen,
+Entfernungen oder Änderungen der Bedeutung erfordern eine neue Hauptversion
+unter `/api/v2`. Jede Antwort enthält `X-Webserver-Api-Version: 1`.
+
+SQLite-Migrationen der Verwaltungsdatenbank werden beim Start atomar erfasst.
+Vor einem Downgrade muss die Datenbank aus einem Backup wiederhergestellt
+werden; ein Binary mit niedrigerer API-/Schema-Version darf keine neuere
+Verwaltungsdatenbank verändern.
+
 ```sh
 cargo fmt --check
 cargo test --locked
