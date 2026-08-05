@@ -292,6 +292,7 @@ async fn bind_tcp(bind: std::net::SocketAddr) -> Result<TcpListener> {
 
         let socket = Socket::new(Domain::for_address(bind), Type::STREAM, Some(Protocol::TCP))?;
         socket.set_reuse_address(true)?;
+        #[cfg(not(any(target_os = "solaris", target_os = "illumos", target_os = "cygwin")))]
         socket.set_reuse_port(true)?;
         socket.bind(&bind.into())?;
         socket.listen(1024)?;
@@ -310,6 +311,7 @@ pub(crate) fn bind_udp(bind: std::net::SocketAddr) -> Result<std::net::UdpSocket
 
     let socket = Socket::new(Domain::for_address(bind), Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
+    #[cfg(not(any(target_os = "solaris", target_os = "illumos", target_os = "cygwin")))]
     socket.set_reuse_port(true)?;
     socket.bind(&bind.into())?;
     socket.set_nonblocking(true)?;
