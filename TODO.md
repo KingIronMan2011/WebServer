@@ -40,13 +40,13 @@ Dieses Dokument ist der Arbeitsplan für den Server. Die erste HTTP/1.1-Version 
 
 ## v0.4 — HTTP-Features und Static Serving
 
-- [ ] Streaming von grossen statischen Dateien statt vollständigem Einlesen
-- [ ] Range Requests
-- [ ] ETag, Last-Modified und Conditional Requests
-- [ ] Konfigurierbare Fehlerseiten
-- [ ] Header-Manipulation, Redirects und URL-Rewrites
-- [ ] gzip und Brotli
-- [ ] Caching-Regeln und optionaler Response-Cache
+- [x] Streaming von grossen statischen Dateien statt vollständigem Einlesen
+- [x] Range Requests
+- [x] ETag, Last-Modified und Conditional Requests
+- [x] Konfigurierbare Fehlerseiten
+- [x] Header-Manipulation, Redirects und URL-Rewrites
+- [x] gzip und Brotli
+- [x] Caching-Regeln und optionaler Response-Cache
 
 ## v0.5 — Betrieb und Sicherheit
 

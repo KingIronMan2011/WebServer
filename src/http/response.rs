@@ -2,6 +2,8 @@
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Empty, Full};
+use std::collections::BTreeMap;
+
 use hyper::{
     Response, StatusCode,
     header::{CONTENT_LENGTH, CONTENT_TYPE},
@@ -48,8 +50,12 @@ pub fn plain(status: StatusCode, value: String) -> Response<Body> {
 }
 
 pub fn redirect(location: String) -> Response<Body> {
+    redirect_with_status(&location, StatusCode::PERMANENT_REDIRECT.as_u16())
+}
+
+pub fn redirect_with_status(location: &str, status: u16) -> Response<Body> {
     Response::builder()
-        .status(StatusCode::PERMANENT_REDIRECT)
+        .status(status)
         .header(hyper::header::LOCATION, location)
         .body(
             Empty::<Bytes>::new()
@@ -57,6 +63,18 @@ pub fn redirect(location: String) -> Response<Body> {
                 .boxed(),
         )
         .expect("valid redirect")
+}
+
+pub fn apply_headers(response: &mut Response<Body>, headers: &BTreeMap<String, String>) {
+    for (name, value) in headers {
+        let (Ok(name), Ok(value)) = (
+            name.parse::<hyper::header::HeaderName>(),
+            value.parse::<hyper::header::HeaderValue>(),
+        ) else {
+            continue;
+        };
+        response.headers_mut().insert(name, value);
+    }
 }
 
 pub fn full(status: StatusCode, content_type: &str, bytes: Bytes) -> Response<Body> {

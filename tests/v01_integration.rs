@@ -50,13 +50,20 @@ fn unused_port() -> u16 {
 }
 
 fn request(port: u16, request: &str) -> String {
+    String::from_utf8_lossy(&request_bytes(port, request)).into_owned()
+}
+
+fn request_bytes(port: u16, request: &str) -> Vec<u8> {
     let mut last_error = None;
     for _ in 0..30 {
         match TcpStream::connect(("127.0.0.1", port)) {
             Ok(mut stream) => {
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .expect("set test read timeout");
                 stream.write_all(request.as_bytes()).expect("write request");
-                let mut response = String::new();
-                stream.read_to_string(&mut response).expect("read response");
+                let mut response = Vec::new();
+                stream.read_to_end(&mut response).expect("read response");
                 return response;
             }
             Err(error) => {
@@ -84,8 +91,11 @@ fn start_server(config: &Path) -> ChildProcess {
 fn serves_static_files_and_proxies_requests() {
     let directory = TempDirectory::new();
     let public = directory.0.join("public");
+    let errors = directory.0.join("errors");
     fs::create_dir_all(&public).expect("create public directory");
+    fs::create_dir_all(&errors).expect("create errors directory");
     fs::write(public.join("index.html"), "static response").expect("write static fixture");
+    fs::write(errors.join("not-found.html"), "custom missing page").expect("write error fixture");
 
     let upstream = TcpListener::bind("127.0.0.1:0").expect("start upstream listener");
     let upstream_port = upstream.local_addr().expect("read upstream address").port();
@@ -108,7 +118,7 @@ fn serves_static_files_and_proxies_requests() {
     fs::write(
         sites.join("localhost.conf"),
         format!(
-            "host = \"localhost\"\n\n[[routes]]\npath_prefix = \"/\"\nkind = \"static\"\nroot = \"../public\"\n\n[[routes]]\npath_prefix = \"/api\"\nkind = \"proxy\"\nupstream = \"http://127.0.0.1:{upstream_port}\"\n"
+            "host = \"localhost\"\n\n[[routes]]\npath_prefix = \"/\"\nkind = \"static\"\nroot = \"../public\"\nresponse_headers = {{ cache-control = \"public, max-age=3600\" }}\nerror_pages = {{ 404 = \"../errors/not-found.html\" }}\n\n[[routes]]\npath_prefix = \"/go\"\nkind = \"redirect\"\nlocation = \"https://example.test/target\"\nstatus = 302\n\n[[routes]]\npath_prefix = \"/api\"\nkind = \"proxy\"\nupstream = \"http://127.0.0.1:{upstream_port}\"\n"
         ),
     )
     .expect("write site configuration");
@@ -123,6 +133,43 @@ fn serves_static_files_and_proxies_requests() {
         "unexpected static response: {static_response}"
     );
     assert!(static_response.ends_with("static response"));
+    assert!(static_response.contains("cache-control: public, max-age=3600"));
+    let etag = static_response
+        .lines()
+        .find_map(|line| line.strip_prefix("etag: "))
+        .expect("static response has an ETag")
+        .to_owned();
+
+    let range_response = request(
+        port,
+        "GET / HTTP/1.1\r\nHost: localhost\r\nRange: bytes=0-5\r\nConnection: close\r\n\r\n",
+    );
+    assert!(range_response.starts_with("HTTP/1.1 206 Partial Content"));
+    assert!(range_response.contains("content-range: bytes 0-5/15"));
+    assert!(range_response.ends_with("static"));
+
+    let compressed_response = request(
+        port,
+        "GET / HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n",
+    );
+    assert!(compressed_response.starts_with("HTTP/1.1 200 OK"));
+    assert!(compressed_response.contains("content-encoding: gzip"));
+    assert!(compressed_response.contains("vary: Accept-Encoding"));
+
+    let conditional_response = request(
+        port,
+        &format!(
+            "GET / HTTP/1.1\r\nHost: localhost\r\nIf-None-Match: {etag}\r\nConnection: close\r\n\r\n"
+        ),
+    );
+    assert!(conditional_response.starts_with("HTTP/1.1 304 Not Modified"));
+
+    let redirect_response = request(
+        port,
+        "GET /go HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    );
+    assert!(redirect_response.starts_with("HTTP/1.1 302 Found"));
+    assert!(redirect_response.contains("location: https://example.test/target"));
 
     let missing_response = request(
         port,
@@ -130,7 +177,7 @@ fn serves_static_files_and_proxies_requests() {
     );
     assert!(missing_response.starts_with("HTTP/1.1 404 Not Found"));
     assert!(missing_response.contains("text/html; charset=utf-8"));
-    assert!(missing_response.contains("There is nothing at this address."));
+    assert!(missing_response.ends_with("custom missing page"));
 
     let proxy_response = request(
         port,

@@ -4,6 +4,31 @@ Ein in Rust gebauter, Caddy-inspirierter Webserver und Reverse Proxy. Das Ziel i
 
 Das Projekt befindet sich noch ganz am Anfang. Der aktuelle Stand enthaelt bewusst nur das Rust-Grundgeruest; die nachfolgende Roadmap beschreibt den geplanten Zielumfang.
 
+## Installation auf Debian und Ubuntu
+
+Das Paketrepository unterstützt derzeit `amd64` und wird kryptografisch signiert. Auf Debian, Ubuntu und darauf basierenden Systemen lässt sich der Webserver so installieren:
+
+```sh
+sudo apt update
+sudo apt install -y ca-certificates curl
+
+curl -fsSL https://repo.kingironman.dev/webserver-archive-keyring.gpg \
+  | sudo tee /usr/share/keyrings/webserver-archive-keyring.gpg >/dev/null
+
+echo 'deb [signed-by=/usr/share/keyrings/webserver-archive-keyring.gpg] https://repo.kingironman.dev stable main' \
+  | sudo tee /etc/apt/sources.list.d/webserver.list >/dev/null
+
+sudo apt update
+sudo apt install webserver
+```
+
+Danach stehen `webserver`, die Standardkonfiguration unter `/etc/webserver/` und der systemd-Dienst zur Verfügung:
+
+```sh
+sudo systemctl enable --now webserver
+sudo systemctl status webserver
+```
+
 ## Zielbild
 
 ```text
@@ -149,6 +174,23 @@ upstream = "http://127.0.0.1:3000"
 Eine Site-Datei besitzt einen Host und ihre Routen. Eine Route besitzt entweder `kind = "static"` mit `root` (und optional `index_file`) oder `kind = "proxy"` mit einem vollständigen HTTP-Upstream. Bei mehreren Treffern gewinnt die Route mit dem längsten passenden Pfadpraefix. Relative Static-Roots werden relativ zur jeweiligen Site-Datei aufgeloest.
 
 Eine Proxy-Route kann auch mehrere Ziele besitzen. Die Ziele werden global per Round Robin ausgewählt; das bisherige einzelne Feld `upstream` bleibt weiterhin gültig.
+
+V0.4 ergänzt Static Serving um Streaming, einzelne HTTP-Byte-Ranges (`Range`), `ETag`, `Last-Modified` sowie `If-None-Match`/`If-Modified-Since`. Static Responses werden bei passendem `Accept-Encoding` gestreamt mit Brotli oder gzip komprimiert; Range-Antworten bleiben unkomprimiert. Response-Header und Redirects werden pro Route konfiguriert; Cache-Regeln sind dabei gewöhnliche Response-Header:
+
+```toml
+[[routes]]
+path_prefix = "/assets"
+kind = "static"
+root = "/var/www/webserver/assets"
+response_headers = { cache-control = "public, max-age=3600", x-content-type-options = "nosniff" }
+error_pages = { 404 = "/var/www/webserver/errors/not-found.html" }
+
+[[routes]]
+path_prefix = "/old"
+kind = "redirect"
+location = "https://example.com/new"
+status = 308
+```
 
 ```toml
 [[routes]]

@@ -47,11 +47,12 @@ pub async fn handle(
         return Ok(response::redirect(format!("https://{host}{target}")));
     }
 
-    let response = match request_size_error(&request, config.server.max_body_bytes) {
+    let matched = router::find(&config, &context.host, &context.path);
+    let mut response = match request_size_error(&request, config.server.max_body_bytes) {
         Some(response) => response,
-        None => match router::find(&config, &context.host, &context.path) {
+        None => match matched {
             None => response::error(StatusCode::NOT_FOUND),
-            Some(matched) => match &matched.route.target {
+            Some(ref matched) => match &matched.route.target {
                 RouteTarget::Static { root, index_file } => {
                     let root = matched.site.static_path(root);
                     static_files::serve(&request, &root, index_file, &matched.route.path_prefix)
@@ -84,9 +85,27 @@ pub async fn handle(
                     )
                     .await
                 }
+                RouteTarget::Redirect { location, status } => {
+                    response::redirect_with_status(location, *status)
+                }
             },
         },
     };
+
+    if let Some(matched) = matched {
+        if response.status().is_client_error() || response.status().is_server_error() {
+            if let Some(page) = static_files::custom_error(
+                response.status(),
+                &matched.route.error_pages,
+                matched.site,
+            )
+            .await
+            {
+                response = page;
+            }
+        }
+        response::apply_headers(&mut response, &matched.route.response_headers);
+    }
 
     tracing::info!(%peer, %method, %path, status = response.status().as_u16(), elapsed_ms = started.elapsed().as_millis(), "request completed");
     Ok(response)

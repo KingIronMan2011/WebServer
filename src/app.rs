@@ -86,6 +86,8 @@ pub async fn run(cli: Cli) -> Result<()> {
                 &host,
                 RouteConfig {
                     path_prefix: path.clone(),
+                    response_headers: Default::default(),
+                    error_pages: Default::default(),
                     target,
                 },
             )?;

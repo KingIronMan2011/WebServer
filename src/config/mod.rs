@@ -1,7 +1,7 @@
 //! Global server configuration and nginx-style per-site configuration files.
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs,
     io::Write,
     net::SocketAddr,
@@ -126,6 +126,12 @@ pub struct SiteConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RouteConfig {
     pub path_prefix: String,
+    /// Headers added to responses handled by this route. Existing values are replaced.
+    #[serde(default)]
+    pub response_headers: BTreeMap<String, String>,
+    /// Optional HTML (or other) documents keyed by HTTP error status, e.g. `404`.
+    #[serde(default)]
+    pub error_pages: BTreeMap<u16, PathBuf>,
     #[serde(flatten)]
     pub target: RouteTarget,
 }
@@ -158,6 +164,11 @@ pub enum RouteTarget {
         rewrite_prefix: Option<String>,
         #[serde(default)]
         health_check: Option<HealthCheckConfig>,
+    },
+    Redirect {
+        location: String,
+        #[serde(default = "default_redirect_status")]
+        status: u16,
     },
 }
 
@@ -245,6 +256,10 @@ fn default_max_header_bytes() -> usize {
 }
 fn default_max_body_bytes() -> u64 {
     10 * 1024 * 1024
+}
+
+fn default_redirect_status() -> u16 {
+    308
 }
 fn default_index_file() -> String {
     "index.html".into()
@@ -551,6 +566,26 @@ impl Config {
                 route.path_prefix
             )));
         }
+        for (name, value) in &route.response_headers {
+            name.parse::<hyper::header::HeaderName>()
+                .map_err(|_| Error::Config(format!("invalid response header name: {name}")))?;
+            value
+                .parse::<hyper::header::HeaderValue>()
+                .map_err(|_| Error::Config(format!("invalid response header value for {name}")))?;
+        }
+        for (status, path) in &route.error_pages {
+            if !(400..600).contains(status) {
+                return Err(Error::Config(format!(
+                    "error page status must be 4xx or 5xx: {status}"
+                )));
+            }
+            if !site.static_path(path).is_file() {
+                return Err(Error::Config(format!(
+                    "error page does not exist: {}",
+                    site.static_path(path).display()
+                )));
+            }
+        }
         match &route.target {
             RouteTarget::Static { root, index_file } => {
                 if index_file.is_empty() {
@@ -614,6 +649,13 @@ impl Config {
                                 .into(),
                         ));
                     }
+                }
+            }
+            RouteTarget::Redirect { location, status } => {
+                if location.is_empty() || !(*status >= 300 && *status < 400) {
+                    return Err(Error::Config(
+                        "redirect needs a location and a 3xx status".into(),
+                    ));
                 }
             }
         }
@@ -726,6 +768,20 @@ fn save_site_preserving_comments(site: &SiteConfig) -> Result<()> {
 fn route_table(route: &RouteConfig) -> Table {
     let mut table = Table::new();
     table["path_prefix"] = value(&route.path_prefix);
+    if !route.response_headers.is_empty() {
+        let mut headers = Table::new();
+        for (name, header_value) in &route.response_headers {
+            headers[name] = value(header_value);
+        }
+        table["response_headers"] = Item::Table(headers);
+    }
+    if !route.error_pages.is_empty() {
+        let mut pages = Table::new();
+        for (status, path) in &route.error_pages {
+            pages[&status.to_string()] = value(path.to_string_lossy().to_string());
+        }
+        table["error_pages"] = Item::Table(pages);
+    }
     match &route.target {
         RouteTarget::Static { root, index_file } => {
             table["kind"] = value("static");
@@ -747,6 +803,11 @@ fn route_table(route: &RouteConfig) -> Table {
                 }
                 table["upstreams"] = value(values);
             }
+        }
+        RouteTarget::Redirect { location, status } => {
+            table["kind"] = value("redirect");
+            table["location"] = value(location);
+            table["status"] = value(*status as i64);
         }
     }
     table
@@ -858,6 +919,8 @@ mod tests {
                 "example.test",
                 RouteConfig {
                     path_prefix: "/api".into(),
+                    response_headers: Default::default(),
+                    error_pages: Default::default(),
                     target: RouteTarget::Proxy {
                         upstream: Some("http://127.0.0.1:4000".into()),
                         upstreams: Vec::new(),
