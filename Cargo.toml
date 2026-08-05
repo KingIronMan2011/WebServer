@@ -1,6 +1,6 @@
 [package]
 name = "webserver"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "A Caddy-inspired reverse proxy and web server written in Rust."
 publish = false
@@ -15,7 +15,11 @@ hyper = { version = "1", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "server-auto", "tokio"] }
 futures-util = "0.3"
 httpdate = "1"
+ipnet = { version = "2", features = ["serde"] }
 mime_guess = "2"
+opentelemetry = "0.32"
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
 percent-encoding = "2"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
@@ -28,7 +32,8 @@ tokio-rustls = "0.26"
 toml = "0.8"
 toml_edit = "0.22"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-opentelemetry = "0.33"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [profile.release]
 codegen-units = 1

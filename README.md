@@ -148,6 +148,14 @@ bind = "0.0.0.0:80"
 upstream_timeout_secs = 30
 max_header_bytes = 32768
 max_body_bytes = 10485760
+max_connections = 1024
+# Zero disables the per-client request limiter.
+# rate_limit_per_minute = 120
+# allow_ips = ["192.0.2.0/24"] # Empty means allow all.
+# deny_ips = ["198.51.100.10/32"]
+# trusted_proxies = ["127.0.0.1/32", "::1/128"]
+# Optional Prometheus text endpoint; keep it private or proxy-protected.
+# metrics_path = "/metrics"
 
 [tls]
 enabled = true

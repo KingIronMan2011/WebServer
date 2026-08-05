@@ -1,11 +1,16 @@
 //! Reads requests from one client connection and writes responses.
 
-use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Instant};
+use std::{
+    convert::Infallible,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::Instant,
+};
 
 use hyper::{
     Request,
     body::Incoming,
-    header::{CONTENT_LENGTH, TRANSFER_ENCODING},
+    header::{CONTENT_LENGTH, ORIGIN, TRANSFER_ENCODING},
 };
 use tokio::sync::RwLock;
 
@@ -28,6 +33,11 @@ pub async fn handle(
     let context = RequestContext::from_request(&request);
     let method = request.method().clone();
     let path = context.path.clone();
+    let origin = request
+        .headers()
+        .get(ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
 
     if !is_tls && let Some(tls) = tls {
         if let Some(token) = context.path.strip_prefix("/.well-known/acme-challenge/")
@@ -47,7 +57,42 @@ pub async fn handle(
         return Ok(response::redirect(format!("https://{host}{target}")));
     }
 
+    if config.server.metrics_path.as_deref() == Some(context.path.as_str()) {
+        return Ok(response::plain(
+            StatusCode::OK,
+            crate::observability::metrics::prometheus(),
+        ));
+    }
+
+    let client_ip = client_ip(&request, peer, &config);
+    if config
+        .server
+        .deny_ips
+        .iter()
+        .any(|network| network.contains(&client_ip))
+        || (!config.server.allow_ips.is_empty()
+            && !config
+                .server
+                .allow_ips
+                .iter()
+                .any(|network| network.contains(&client_ip)))
+    {
+        return Ok(response::error(StatusCode::FORBIDDEN));
+    }
+    if !crate::server::limits::allow(client_ip, config.server.rate_limit_per_minute) {
+        return Ok(response::error(StatusCode::TOO_MANY_REQUESTS));
+    }
+
     let matched = router::find(&config, &context.host, &context.path);
+    if let Some(ref matched) = matched
+        && request.method() == hyper::Method::OPTIONS
+        && let Some(cors) = &matched.route.cors
+    {
+        let mut response =
+            response::empty_with_content_length(StatusCode::NO_CONTENT, "text/plain", 0);
+        apply_cors(&mut response, origin.as_deref(), cors);
+        return Ok(response);
+    }
     let mut response = match request_size_error(&request, config.server.max_body_bytes) {
         Some(response) => response,
         None => match matched {
@@ -105,10 +150,75 @@ pub async fn handle(
             }
         }
         response::apply_headers(&mut response, &matched.route.response_headers);
+        if let Some(cors) = &matched.route.cors {
+            apply_cors(&mut response, origin.as_deref(), cors);
+        }
     }
 
     tracing::info!(%peer, %method, %path, status = response.status().as_u16(), elapsed_ms = started.elapsed().as_millis(), "request completed");
+    crate::observability::metrics::record(response.status().as_u16());
     Ok(response)
+}
+
+fn apply_cors(
+    response: &mut hyper::Response<Body>,
+    origin: Option<&str>,
+    cors: &crate::config::CorsConfig,
+) {
+    let Some(origin) = origin.filter(|origin| {
+        cors.origins
+            .iter()
+            .any(|allowed| allowed == "*" || allowed == origin)
+    }) else {
+        return;
+    };
+    let headers = response.headers_mut();
+    let value = if cors.origins.iter().any(|allowed| allowed == "*") {
+        "*"
+    } else {
+        origin
+    };
+    if let Ok(value) = value.parse() {
+        headers.insert("access-control-allow-origin", value);
+    }
+    if let Ok(value) = cors.methods.join(", ").parse() {
+        headers.insert("access-control-allow-methods", value);
+    }
+    if !cors.headers.is_empty()
+        && let Ok(value) = cors.headers.join(", ").parse()
+    {
+        headers.insert("access-control-allow-headers", value);
+    }
+    if cors.allow_credentials {
+        headers.insert(
+            "access-control-allow-credentials",
+            "true".parse().expect("valid header"),
+        );
+    }
+    if cors.max_age_secs > 0
+        && let Ok(value) = cors.max_age_secs.to_string().parse()
+    {
+        headers.insert("access-control-max-age", value);
+    }
+    headers.insert("vary", "Origin".parse().expect("valid header"));
+}
+
+fn client_ip(request: &Request<Incoming>, peer: SocketAddr, config: &Config) -> IpAddr {
+    if !config
+        .server
+        .trusted_proxies
+        .iter()
+        .any(|network| network.contains(&peer.ip()))
+    {
+        return peer.ip();
+    }
+    request
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|header| header.to_str().ok())
+        .and_then(|header| header.split(',').next())
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(peer.ip())
 }
 
 fn request_size_error(

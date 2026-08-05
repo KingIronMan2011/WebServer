@@ -88,6 +88,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                     path_prefix: path.clone(),
                     response_headers: Default::default(),
                     error_pages: Default::default(),
+                    cors: None,
                     target,
                 },
             )?;

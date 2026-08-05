@@ -50,14 +50,14 @@ Dieses Dokument ist der Arbeitsplan für den Server. Die erste HTTP/1.1-Version 
 
 ## v0.5 — Betrieb und Sicherheit
 
-- [ ] Strukturierte JSON-Logs und Log-Rotation
-- [ ] Prometheus-Metriken
-- [ ] OpenTelemetry-Tracing
-- [ ] Rate Limiting und Concurrent-Connection-Limits
-- [ ] IP-Allow-/Deny-Listen und vertrauenswürdige Proxy-Netze
-- [ ] CORS- und Security-Header-Regeln
-- [ ] Privilege Dropping, Linux-Capabilities und weitere systemd-Hardening-Optionen
-- [ ] Fuzzing des HTTP- und Konfigurationspfads
+- [x] Strukturierte JSON-Logs und Log-Rotation
+- [x] Prometheus-Metriken
+- [x] OpenTelemetry-Tracing
+- [x] Rate Limiting und Concurrent-Connection-Limits
+- [x] IP-Allow-/Deny-Listen und vertrauenswürdige Proxy-Netze
+- [x] CORS- und Security-Header-Regeln
+- [x] Privilege Dropping, Linux-Capabilities und weitere systemd-Hardening-Optionen
+- [x] Fuzzing des HTTP- und Konfigurationspfads
 
 ## v0.6 — Moderne Protokolle und Infrastruktur
 

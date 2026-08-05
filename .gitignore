@@ -1,4 +1,5 @@
 /target/
+/fuzz/target/
 
 # Local environment and secret material
 .env

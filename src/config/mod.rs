@@ -10,6 +10,7 @@ use std::{
 };
 
 use hyper::Uri;
+use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
@@ -101,6 +102,24 @@ pub struct ServerConfig {
     pub max_header_bytes: usize,
     #[serde(default = "default_max_body_bytes")]
     pub max_body_bytes: u64,
+    /// Optional path exposing Prometheus text metrics. Keep it behind a trusted proxy.
+    #[serde(default)]
+    pub metrics_path: Option<String>,
+    /// Maximum concurrently open client connections. Zero disables the cap.
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
+    /// Per-client request budget per rolling minute. Zero disables limiting.
+    #[serde(default)]
+    pub rate_limit_per_minute: u32,
+    /// Networks permitted to access the server. An empty list permits all.
+    #[serde(default)]
+    pub allow_ips: Vec<IpNet>,
+    /// Networks that are always denied, even when also included in allow_ips.
+    #[serde(default)]
+    pub deny_ips: Vec<IpNet>,
+    /// Direct peers allowed to supply the effective client address in X-Forwarded-For.
+    #[serde(default)]
+    pub trusted_proxies: Vec<IpNet>,
 }
 
 impl Default for ServerConfig {
@@ -110,6 +129,12 @@ impl Default for ServerConfig {
             upstream_timeout_secs: default_timeout(),
             max_header_bytes: default_max_header_bytes(),
             max_body_bytes: default_max_body_bytes(),
+            metrics_path: None,
+            max_connections: default_max_connections(),
+            rate_limit_per_minute: 0,
+            allow_ips: Vec::new(),
+            deny_ips: Vec::new(),
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -132,8 +157,23 @@ pub struct RouteConfig {
     /// Optional HTML (or other) documents keyed by HTTP error status, e.g. `404`.
     #[serde(default)]
     pub error_pages: BTreeMap<u16, PathBuf>,
+    #[serde(default)]
+    pub cors: Option<CorsConfig>,
     #[serde(flatten)]
     pub target: RouteTarget,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CorsConfig {
+    pub origins: Vec<String>,
+    #[serde(default = "default_cors_methods")]
+    pub methods: Vec<String>,
+    #[serde(default)]
+    pub headers: Vec<String>,
+    #[serde(default)]
+    pub allow_credentials: bool,
+    #[serde(default)]
+    pub max_age_secs: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -258,8 +298,16 @@ fn default_max_body_bytes() -> u64 {
     10 * 1024 * 1024
 }
 
+fn default_max_connections() -> usize {
+    1024
+}
+
 fn default_redirect_status() -> u16 {
     308
+}
+
+fn default_cors_methods() -> Vec<String> {
+    vec!["GET".into(), "HEAD".into(), "OPTIONS".into()]
 }
 fn default_index_file() -> String {
     "index.html".into()
@@ -584,6 +632,15 @@ impl Config {
                     "error page does not exist: {}",
                     site.static_path(path).display()
                 )));
+            }
+        }
+        if let Some(cors) = &route.cors {
+            if cors.origins.is_empty()
+                || (cors.allow_credentials && cors.origins.iter().any(|origin| origin == "*"))
+            {
+                return Err(Error::Config(
+                    "CORS needs at least one explicit origin when credentials are enabled".into(),
+                ));
             }
         }
         match &route.target {
@@ -921,6 +978,7 @@ mod tests {
                     path_prefix: "/api".into(),
                     response_headers: Default::default(),
                     error_pages: Default::default(),
+                    cors: None,
                     target: RouteTarget::Proxy {
                         upstream: Some("http://127.0.0.1:4000".into()),
                         upstreams: Vec::new(),

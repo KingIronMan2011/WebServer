@@ -169,9 +169,14 @@ async fn accept_one(
     max_header_bytes: usize,
 ) -> Result<()> {
     let (stream, peer) = listener.accept().await?;
+    let limit = state.read().await.server.max_connections;
+    let Some(connection_guard) = connections.try_track(limit) else {
+        tracing::warn!(%peer, limit, "connection limit reached");
+        return Ok(());
+    };
     let state = Arc::clone(state);
     tokio::spawn(async move {
-        let _connection = connections.track();
+        let _connection = connection_guard;
         let service = service_fn(move |request| {
             connection::handle(request, peer, Arc::clone(&state), tls.clone(), false)
         });
@@ -225,7 +230,11 @@ async fn spawn_tls_listener(
             let acceptor = tls.acceptor();
             let connections = Arc::clone(&connections);
             tokio::spawn(async move {
-                let _connection = connections.track();
+                let limit = state.read().await.server.max_connections;
+                let Some(_connection) = connections.try_track(limit) else {
+                    tracing::warn!(%peer, limit, "connection limit reached");
+                    return;
+                };
                 let stream = match acceptor.accept(stream).await {
                     Ok(stream) => stream,
                     Err(error) => {
@@ -256,9 +265,20 @@ struct ConnectionTracker {
 }
 
 impl ConnectionTracker {
-    fn track(self: &Arc<Self>) -> ConnectionGuard {
-        self.active.fetch_add(1, Ordering::AcqRel);
-        ConnectionGuard(Arc::clone(self))
+    fn try_track(self: &Arc<Self>, limit: usize) -> Option<ConnectionGuard> {
+        loop {
+            let active = self.active.load(Ordering::Acquire);
+            if limit != 0 && active >= limit {
+                return None;
+            }
+            if self
+                .active
+                .compare_exchange_weak(active, active + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Some(ConnectionGuard(Arc::clone(self)));
+            }
+        }
     }
 
     async fn wait_for_all(&self) {
@@ -322,7 +342,7 @@ mod tests {
     #[tokio::test]
     async fn tracker_waits_for_existing_connections() {
         let tracker = Arc::new(ConnectionTracker::default());
-        let connection = tracker.track();
+        let connection = tracker.try_track(1).expect("acquire connection slot");
         let waiter = tokio::spawn({
             let tracker = Arc::clone(&tracker);
             async move { tracker.wait_for_all().await }

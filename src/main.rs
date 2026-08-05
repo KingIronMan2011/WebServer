@@ -1,19 +1,8 @@
-mod app;
-mod cli;
-mod config;
-mod error;
-mod handlers;
-mod http;
-mod observability;
-mod routing;
-mod server;
-mod tls;
-mod upstream;
+use clap::Parser;
+use webserver::{app, cli, observability};
 
 #[cfg(windows)]
-mod windows_service_runtime;
-
-use clap::Parser;
+use webserver::windows_service_runtime;
 
 #[cfg(not(windows))]
 #[tokio::main]

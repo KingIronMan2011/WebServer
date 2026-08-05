@@ -8,6 +8,8 @@ Type=simple
 User=www-data
 Group=www-data
 WorkingDirectory=/var/www/webserver
+Environment=WEBSERVER_LOG_FORMAT=json
+# Optional: configure OTEL_EXPORTER_OTLP_ENDPOINT in a systemd drop-in.
 ExecStart=/usr/local/bin/webserver run --config /etc/webserver/webserver.toml
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
@@ -17,9 +19,19 @@ RestartSec=3s
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
+PrivateDevices=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectClock=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+UMask=0027
 ReadWritePaths=/var/www/webserver /var/log/webserver /etc/webserver/certificates/acme
 
 [Install]

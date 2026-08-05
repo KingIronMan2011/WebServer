@@ -1,0 +1,26 @@
+[package]
+name = "webserver-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+percent-encoding = "2"
+toml = "0.8"
+webserver = { path = ".." }
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "http_path"
+path = "fuzz_targets/http_path.rs"
+test = false
+doc = false
