@@ -19,7 +19,9 @@ FROM node:bookworm AS dashboard
 
 COPY --from=source /src/dashboard /dashboard
 WORKDIR /dashboard
-RUN corepack enable && pnpm install --frozen-lockfile && pnpm build
+RUN npm install --global pnpm@11.20.0 \
+    && pnpm install --frozen-lockfile \
+    && pnpm build
 
 FROM rust:bookworm AS build
 

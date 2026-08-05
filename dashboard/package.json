@@ -2,6 +2,7 @@
   "name": "webserver-dashboard",
   "private": true,
   "version": "0.9.0",
+  "packageManager": "pnpm@11.20.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
