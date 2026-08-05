@@ -29,7 +29,7 @@ COPY --from=source /src /src
 COPY debian/postinst /tmp/postinst
 WORKDIR /src
 RUN cargo build --locked --release
-COPY --from=dashboard /dashboard/dist /dashboard
+COPY --from=dashboard /dashboard/dist /dashboard/dist
 
 RUN set -eux; \
     version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"; \
