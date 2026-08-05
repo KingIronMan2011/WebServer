@@ -56,8 +56,12 @@ RUN --mount=type=secret,id=apt_gpg_private_key_b64,required=true \
     rm -rf "$GNUPGHOME" /tmp/webserver_*_amd64.deb
 
 FROM nginx:alpine
-COPY --from=repository /repo /usr/share/nginx/html
+COPY --from=repository /repo/dists /usr/share/nginx/html/dists
+COPY --from=repository /repo/pool /usr/share/nginx/html/pool
+COPY --from=repository /repo/webserver-archive-keyring.asc /usr/share/nginx/html/webserver-archive-keyring.asc
+COPY --from=repository /repo/webserver-archive-keyring.gpg /usr/share/nginx/html/webserver-archive-keyring.gpg
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-# The base image's welcome page would otherwise take precedence over autoindex.
-RUN rm -f /usr/share/nginx/html/index.html
+# The base image's welcome/error pages would otherwise be exposed or take
+# precedence over the repository directory listing.
+RUN rm -f /usr/share/nginx/html/index.html /usr/share/nginx/html/50x.html
 EXPOSE 8080
