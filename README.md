@@ -6,8 +6,8 @@ Load-Balancing, Observability und moderne HTTP-Protokolle in einem Binary.
 
 ![Lizenz: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-**Aktueller Stand: v0.6.0.** Der vollständige nächste Ausbauplan steht in
-[TODO.md](TODO.md).
+**Aktueller Stand: v1.0.0.** Die stabilen Verträge und Hinweise für produktive
+Upgrades stehen in [docs/UPGRADING.md](docs/UPGRADING.md).
 
 ## Inhalt
 
@@ -18,6 +18,8 @@ Load-Balancing, Observability und moderne HTTP-Protokolle in einem Binary.
 - [TLS und HTTP/3](#tls-und-http3)
 - [Upstreams und Discovery](#upstreams-und-discovery)
 - [Sicherheit und Observability](#sicherheit-und-observability)
+- [Stabile Verträge](#stabile-verträge)
+- [Upgrades](#upgrades)
 - [Entwicklung](#entwicklung)
 
 ## Schnellstart
@@ -275,19 +277,34 @@ webserver route-remove --host example.test --path /api
 webserver completion bash
 ```
 
+## Stabile Verträge
+
+Ab v1.0 gelten die folgenden Kompatibilitätsregeln:
+
+- TOML-Felder, CLI-Befehle und ihre dokumentierten Optionen bleiben innerhalb
+  einer Hauptversion kompatibel. Neue optionale Felder oder Endpunkte sind
+  zulässig; Umbenennungen, Entfernungen oder Bedeutungsänderungen erfordern
+  eine neue Hauptversion.
+- Die Verwaltungs-API verwendet den Pfadpräfix `/api/v1`; jede Antwort enthält
+  `X-Webserver-Api-Version: 1`. Der maschinenlesbare Vertrag ist unter
+  `/api/v1/openapi.json` verfügbar.
+- Browser-Sitzungen verwenden ausschließlich das `HttpOnly`-
+  `Secure`-Cookie `__Host-webserver_admin`. Automatisierung kann einen
+  Bearer-Session-Token verwenden. Zugangsdaten und private Schlüssel werden
+  niemals von API-Endpunkten ausgegeben.
+- Die Dashboard-Dateien sind ein Build-Artefakt unter `dashboard/`; der
+  Release- und Debian-Paketbau liefert dessen `dist` mit aus.
+
+Die vollständige API-, Konfigurations- und Upgrade-Referenz steht in
+[docs/UPGRADING.md](docs/UPGRADING.md).
+
+## Upgrades
+
+Vor jedem produktiven Upgrade müssen Konfiguration und Verwaltungsdatenbank
+gesichert werden. Die Schritt-für-Schritt-Anleitung, Downgrade-Regeln und
+Rollback-Abläufe stehen in [docs/UPGRADING.md](docs/UPGRADING.md).
+
 ## Entwicklung
-
-### Verwaltungs-API-Kompatibilität
-
-Die Verwaltungs-API ist unter `/api/v1` versioniert. Nicht-brechende Felder
-und Endpunkte können innerhalb von `v1` ergänzt werden; Umbenennungen,
-Entfernungen oder Änderungen der Bedeutung erfordern eine neue Hauptversion
-unter `/api/v2`. Jede Antwort enthält `X-Webserver-Api-Version: 1`.
-
-SQLite-Migrationen der Verwaltungsdatenbank werden beim Start atomar erfasst.
-Vor einem Downgrade muss die Datenbank aus einem Backup wiederhergestellt
-werden; ein Binary mit niedrigerer API-/Schema-Version darf keine neuere
-Verwaltungsdatenbank verändern.
 
 ```sh
 cargo fmt --check
@@ -304,10 +321,8 @@ sudo packaging/install.sh ./target/release/webserver
 
 ## Roadmap
 
-V0.6 ist abgeschlossen. Als Nächstes folgen eine lokale Verwaltungs-API
-(V0.7), eine einheitliche Verwaltungs- und Zugriffsschicht (V0.8), ein
-Web-Dashboard (V0.9) und danach die stabile V1.0-Oberfläche. Details stehen in
-[TODO.md](TODO.md).
+V1.0 ist abgeschlossen. Weiterführende Vorhaben werden in
+[TODO.md](TODO.md) gepflegt.
 
 ## Lizenz
 

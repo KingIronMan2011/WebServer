@@ -510,7 +510,7 @@ async fn update_user_role(
             "role must be admin, operator, or viewer",
         );
     };
-    if username == "" {
+    if username.is_empty() {
         return ApiError::response(
             StatusCode::BAD_REQUEST,
             "invalid_user",
@@ -974,7 +974,10 @@ async fn observability(
     jar: CookieJar,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if authenticated_user(&state.database, &jar, &headers).await.is_none() {
+    if authenticated_user(&state.database, &jar, &headers)
+        .await
+        .is_none()
+    {
         return ApiError::response(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
@@ -1381,5 +1384,25 @@ mod tests {
         // SQLite can hold an advisory file handle briefly on Windows after its
         // last async statement. The unique temporary directory is left for the
         // OS temporary-file cleanup instead of making this security test flaky.
+    }
+
+    #[tokio::test]
+    async fn openapi_contract_keeps_the_v1_management_surface() {
+        let Json(contract) = openapi().await;
+        assert_eq!(contract["openapi"], "3.1.0");
+        assert_eq!(contract["info"]["version"], "v1");
+        for path in [
+            "/api/v1/health",
+            "/api/v1/auth/login",
+            "/api/v1/sites",
+            "/api/v1/upstreams",
+            "/api/v1/certificates",
+            "/api/v1/logs",
+            "/api/v1/metrics",
+            "/api/v1/observability",
+        ] {
+            assert!(contract["paths"].get(path).is_some(), "missing {path}");
+        }
+        assert_eq!(API_VERSION, 1);
     }
 }

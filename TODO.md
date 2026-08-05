@@ -90,6 +90,6 @@ Dieses Dokument ist der Arbeitsplan für den Server. Die erste HTTP/1.1-Version 
 
 ## v1.0 — Stabile Server- und Verwaltungsoberfläche
 
-- [ ] Stabile, dokumentierte Konfigurations-, CLI- und API-Verträge
-- [ ] Upgrade- und Migrationsleitfaden für produktive Installationen
-- [ ] Vollständige End-to-End-, Sicherheits- und Release-Regressionstests
+- [x] Stabile, dokumentierte Konfigurations-, CLI- und API-Verträge
+- [x] Upgrade- und Migrationsleitfaden für produktive Installationen
+- [x] Vollständige End-to-End-, Sicherheits- und Release-Regressionstests

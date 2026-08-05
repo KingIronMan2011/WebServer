@@ -22,6 +22,10 @@ use hyper::{
     header::{CONNECTION, HOST, HeaderName, HeaderValue},
 };
 
+// The arguments mirror one proxy route's independently configurable fields;
+// grouping them would obscure the connection between the route contract and
+// its execution path.
+#[allow(clippy::too_many_arguments)]
 pub async fn serve<B>(
     request: Request<B>,
     upstreams: &[(&str, u32)],

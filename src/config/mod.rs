@@ -215,6 +215,9 @@ pub struct CorsConfig {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+// Keep the direct serde representation: boxing fields would be an internal
+// optimisation but makes this stable configuration type harder to inspect.
+#[allow(clippy::large_enum_variant)]
 pub enum RouteTarget {
     Static {
         root: PathBuf,
@@ -809,14 +812,13 @@ impl Config {
                 )));
             }
         }
-        if let Some(cors) = &route.cors {
-            if cors.origins.is_empty()
-                || (cors.allow_credentials && cors.origins.iter().any(|origin| origin == "*"))
-            {
-                return Err(Error::Config(
-                    "CORS needs at least one explicit origin when credentials are enabled".into(),
-                ));
-            }
+        if let Some(cors) = &route.cors
+            && (cors.origins.is_empty()
+                || (cors.allow_credentials && cors.origins.iter().any(|origin| origin == "*")))
+        {
+            return Err(Error::Config(
+                "CORS needs at least one explicit origin when credentials are enabled".into(),
+            ));
         }
         match &route.target {
             RouteTarget::Static { root, index_file } => {
@@ -906,16 +908,14 @@ impl Config {
                         return Err(Error::Config(format!("proxy {name} must start with '/'")));
                     }
                 }
-                if let Some(check) = health_check {
-                    if !check.path.starts_with('/')
+                if let Some(check) = health_check
+                    && (!check.path.starts_with('/')
                         || check.interval_secs == 0
-                        || check.timeout_secs == 0
-                    {
-                        return Err(Error::Config(
-                            "health_check needs an absolute path and non-zero interval/timeout"
-                                .into(),
-                        ));
-                    }
+                        || check.timeout_secs == 0)
+                {
+                    return Err(Error::Config(
+                        "health_check needs an absolute path and non-zero interval/timeout".into(),
+                    ));
                 }
             }
             RouteTarget::Redirect { location, status } => {

@@ -13,6 +13,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: verify
+      - name: Verify dashboard lockfile, quality, and production bundle
+        working-directory: dashboard
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm lint
+          pnpm format:check
+          pnpm types
+          pnpm build
+          test -f dist/index.html
+          test -d dist/assets
+      - name: Verify Rust formatting, lints, unit, integration, and security tests
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all-targets
+
   check_release:
     runs-on: ubuntu-latest
     outputs:
@@ -43,14 +73,14 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   build_linux:
-    needs: check_release
+    needs: [check_release, verify]
     if: needs.check_release.outputs.exists == 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          version: 11
+          version: 11.20.0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -70,7 +100,10 @@ jobs:
           cp target/x86_64-unknown-linux-gnu/release/webserver release/webserver/
           cp -R packaging release/webserver/
           cp -R dashboard/dist release/webserver/dashboard
+          cp -R docs release/webserver/
           cp README.md TODO.md release/webserver/
+          test -f release/webserver/dashboard/index.html
+          test -f release/webserver/docs/UPGRADING.md
           tar -C release -czf webserver-linux-x86_64.tar.gz webserver
       - uses: actions/upload-artifact@v4
         with:
@@ -79,14 +112,14 @@ jobs:
           if-no-files-found: error
 
   build_windows:
-    needs: check_release
+    needs: [check_release, verify]
     if: needs.check_release.outputs.exists == 'false'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          version: 11
+          version: 11.20.0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -107,7 +140,10 @@ jobs:
           Copy-Item target\x86_64-pc-windows-msvc\release\webserver.exe release\webserver\
           Copy-Item packaging release\webserver\packaging -Recurse
           Copy-Item dashboard\dist release\webserver\dashboard -Recurse
+          Copy-Item docs release\webserver\docs -Recurse
           Copy-Item README.md, TODO.md release\webserver\
+          if (-not (Test-Path release\webserver\dashboard\index.html)) { throw "Dashboard bundle is missing" }
+          if (-not (Test-Path release\webserver\docs\UPGRADING.md)) { throw "Upgrade guide is missing" }
           Compress-Archive -Path release\webserver -DestinationPath webserver-windows-x86_64.zip
       - uses: actions/upload-artifact@v4
         with:

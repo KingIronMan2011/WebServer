@@ -200,16 +200,15 @@ where
     };
 
     if let Some(matched) = matched {
-        if response.status().is_client_error() || response.status().is_server_error() {
-            if let Some(page) = static_files::custom_error(
+        if (response.status().is_client_error() || response.status().is_server_error())
+            && let Some(page) = static_files::custom_error(
                 response.status(),
                 &matched.route.error_pages,
                 matched.site,
             )
             .await
-            {
-                response = page;
-            }
+        {
+            response = page;
         }
         response::apply_headers(&mut response, &matched.route.response_headers);
         if let Some(cors) = &matched.route.cors {
