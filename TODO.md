@@ -70,10 +70,10 @@ Dieses Dokument ist der Arbeitsplan für den Server. Die erste HTTP/1.1-Version 
 
 ## v0.7 — Lokale Verwaltungs-API
 
-- [ ] Lokale, authentifizierte Admin-API
-- [ ] API-Endpunkte für Sites, Routen, Upstreams, Zertifikate, Logs und Metriken
-- [ ] Sichere lokale Standardbindung; keine externe Freigabe ohne explizite Konfiguration
-- [ ] API-Tests und OpenAPI-Dokumentation
+- [x] Lokale, authentifizierte Admin-API
+- [x] API-Endpunkte für Sites, Routen, Upstreams, Zertifikate, Logs und Metriken
+- [x] Sichere lokale Standardbindung; keine externe Freigabe ohne explizite Konfiguration
+- [x] API-Tests und OpenAPI-Dokumentation
 
 ## v0.8 — Einheitliche Verwaltung und Zugriffsschutz
 

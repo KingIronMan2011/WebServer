@@ -56,14 +56,22 @@ where
         }
         let host = context.host;
         if host.is_empty() {
-            return Ok(with_http3_alt_svc(response::error(StatusCode::BAD_REQUEST), &config, is_tls));
+            return Ok(with_http3_alt_svc(
+                response::error(StatusCode::BAD_REQUEST),
+                &config,
+                is_tls,
+            ));
         }
         let target = request
             .uri()
             .path_and_query()
             .map(|value| value.as_str())
             .unwrap_or("/");
-        return Ok(with_http3_alt_svc(response::redirect(format!("https://{host}{target}")), &config, is_tls));
+        return Ok(with_http3_alt_svc(
+            response::redirect(format!("https://{host}{target}")),
+            &config,
+            is_tls,
+        ));
     }
 
     if config.server.metrics_path.as_deref() == Some(context.path.as_str()) {
@@ -87,10 +95,18 @@ where
                 .iter()
                 .any(|network| network.contains(&client_ip)))
     {
-        return Ok(with_http3_alt_svc(response::error(StatusCode::FORBIDDEN), &config, is_tls));
+        return Ok(with_http3_alt_svc(
+            response::error(StatusCode::FORBIDDEN),
+            &config,
+            is_tls,
+        ));
     }
     if !crate::server::limits::allow(client_ip, config.server.rate_limit_per_minute) {
-        return Ok(with_http3_alt_svc(response::error(StatusCode::TOO_MANY_REQUESTS), &config, is_tls));
+        return Ok(with_http3_alt_svc(
+            response::error(StatusCode::TOO_MANY_REQUESTS),
+            &config,
+            is_tls,
+        ));
     }
 
     let matched = router::find(&config, &context.host, &context.path);

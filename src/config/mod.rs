@@ -20,6 +20,7 @@ use crate::error::{Error, Result};
 pub struct Config {
     pub server: ServerConfig,
     pub tls: TlsConfig,
+    pub admin: AdminConfig,
     pub sites: Vec<SiteConfig>,
     source_path: PathBuf,
 }
@@ -30,6 +31,34 @@ struct GlobalConfig {
     server: ServerConfig,
     #[serde(default)]
     tls: TlsConfig,
+    #[serde(default)]
+    admin: AdminConfig,
+}
+
+/// Configuration for the management API. It is deliberately disabled until a
+/// local administrator explicitly enables it with `webserver admin web-init`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AdminConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_admin_bind")]
+    pub bind: SocketAddr,
+    /// Public DNS name used for the admin UI and WebAuthn relying party.
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default = "default_admin_database")]
+    pub database: PathBuf,
+}
+
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: default_admin_bind(),
+            host: None,
+            database: default_admin_database(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -332,6 +361,19 @@ fn default_https_bind() -> SocketAddr {
         .parse()
         .expect("default HTTPS bind address is valid")
 }
+fn default_admin_bind() -> SocketAddr {
+    "0.0.0.0:9080"
+        .parse()
+        .expect("default admin bind address is valid")
+}
+#[cfg(windows)]
+fn default_admin_database() -> PathBuf {
+    PathBuf::from(r"C:\ProgramData\Webserver\admin.db")
+}
+#[cfg(not(windows))]
+fn default_admin_database() -> PathBuf {
+    PathBuf::from("/var/lib/webserver/admin.db")
+}
 #[cfg(windows)]
 fn default_certificate_cache() -> PathBuf {
     PathBuf::from(r"C:\ProgramData\Webserver\certificates\acme")
@@ -403,6 +445,43 @@ fn default_health_timeout_secs() -> u64 {
 }
 
 impl Config {
+    /// Enables the externally reachable, TLS-only management endpoint. This is
+    /// deliberately a separate explicit operation from package installation.
+    pub fn configure_admin(
+        path: impl AsRef<Path>,
+        host: &str,
+        email: &str,
+        database: &Path,
+    ) -> Result<()> {
+        let source_path = config_path(path.as_ref());
+        let host = normalise_host(host);
+        if !is_safe_host_name(&host) {
+            return Err(Error::Config("admin host must be a valid hostname".into()));
+        }
+        if !email.contains('@') {
+            return Err(Error::Config(
+                "a valid ACME email address is required".into(),
+            ));
+        }
+        let contents = fs::read_to_string(&source_path)?;
+        let mut document = contents
+            .parse::<DocumentMut>()
+            .map_err(|error| Error::Config(format!("invalid global configuration: {error}")))?;
+        if !document["tls"].is_table() {
+            document["tls"] = Item::Table(Table::new());
+        }
+        document["tls"]["enabled"] = value(true);
+        document["tls"]["email"] = value(email);
+        if !document["admin"].is_table() {
+            document["admin"] = Item::Table(Table::new());
+        }
+        document["admin"]["enabled"] = value(true);
+        document["admin"]["bind"] = value("0.0.0.0:9080");
+        document["admin"]["host"] = value(host);
+        document["admin"]["database"] = value(database.to_string_lossy().to_string());
+        atomic_write(&source_path, &document.to_string())
+    }
+
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let source_path = config_path(path.as_ref());
         let contents = fs::read_to_string(&source_path)?;
@@ -439,6 +518,7 @@ impl Config {
         Ok(Self {
             server: global.server,
             tls: global.tls,
+            admin: global.admin,
             sites,
             source_path,
         })
@@ -576,11 +656,26 @@ impl Config {
             }
         }
         if self.tls.http3 && !self.tls.enabled {
-            return Err(Error::Config("tls.http3 requires tls.enabled = true".into()));
+            return Err(Error::Config(
+                "tls.http3 requires tls.enabled = true".into(),
+            ));
         }
         if self.tls.enabled {
             self.validate_local_certificates(&hosts)?;
             self.validate_dns_challenge()?;
+        }
+        if self.admin.enabled {
+            let host = self.admin.host.as_deref().ok_or_else(|| {
+                Error::Config("admin.host is required when the admin API is enabled".into())
+            })?;
+            if !is_safe_host_name(&normalise_host(host)) {
+                return Err(Error::Config("admin.host must be a valid hostname".into()));
+            }
+            if !self.tls.enabled {
+                return Err(Error::Config(
+                    "admin API requires tls.enabled = true".into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -656,7 +751,13 @@ impl Config {
             ensure_private_key_permissions(&certificate.private_key)?;
             for host in &certificate.hosts {
                 let host = normalise_host(host);
-                if host.is_empty() || !is_safe_host_name(&host) || !sites.contains(&host) {
+                let is_admin_host = self.admin.enabled
+                    && self.admin.host.as_deref().map(normalise_host).as_deref()
+                        == Some(host.as_str());
+                if host.is_empty()
+                    || !is_safe_host_name(&host)
+                    || (!sites.contains(&host) && !is_admin_host)
+                {
                     return Err(Error::Config(format!(
                         "local certificate host must match a configured site: {host}"
                     )));

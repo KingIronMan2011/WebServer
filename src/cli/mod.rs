@@ -17,7 +17,27 @@ pub struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum AdminCommand {
+    /// Locally create the first management account and enable the HTTPS admin API.
+    WebInit {
+        #[arg(short, long, default_value = "webserver.toml")]
+        config: PathBuf,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        email: String,
+        #[arg(long)]
+        username: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Bootstrap and manage the authenticated administration interface.
+    Admin {
+        #[command(subcommand)]
+        command: AdminCommand,
+    },
     /// Start the HTTP server.
     Run {
         #[arg(short, long, default_value = "webserver.toml")]

@@ -41,6 +41,13 @@ impl TlsManager {
             .sites
             .iter()
             .map(|site| site.host.clone())
+            .chain(
+                config
+                    .admin
+                    .enabled
+                    .then(|| config.admin.host.clone())
+                    .flatten(),
+            )
             .filter(|host| !local_hosts.contains(&normalise_host(host)))
             .collect::<Vec<_>>();
         let acme_resolver = if acme_domains.is_empty() {

@@ -6,7 +6,7 @@ use clap::CommandFactory;
 use clap_complete::generate;
 
 use crate::{
-    cli::{Cli, Command},
+    cli::{AdminCommand, Cli, Command},
     config::{Config, RouteConfig, RouteTarget},
     error::Result,
     server::listener,
@@ -14,6 +14,37 @@ use crate::{
 
 pub async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Command::Admin {
+            command:
+                AdminCommand::WebInit {
+                    config,
+                    host,
+                    email,
+                    username,
+                },
+        } => {
+            let current = Config::load(&config)?;
+            if current.admin.enabled {
+                return Err(crate::error::Error::Config(
+                    "admin API is already initialized; use the local recovery command".into(),
+                ));
+            }
+            let username =
+                username.unwrap_or_else(|| format!("admin-{}", uuid::Uuid::new_v4().simple()));
+            let password = format!("{}-{}", uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+            let setup_code = format!("{}-{}", uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+            Config::configure_admin(&config, &host, &email, &current.admin.database)?;
+            crate::admin::bootstrap(&current.admin.database, &username, &password, &setup_code)
+                .await?;
+            println!("Admin API enabled at https://{host}:9080");
+            println!("Username: {username}");
+            println!("Temporary password: {password}");
+            println!("One-time setup code (expires in 15 minutes): {setup_code}");
+            println!(
+                "Change the password and register a passkey immediately after the first login."
+            );
+            Ok(())
+        }
         Command::Run { config } => {
             let config = Config::load(&config)?;
             config.validate()?;

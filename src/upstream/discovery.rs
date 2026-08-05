@@ -1,7 +1,11 @@
 //! Runtime discovery sources for proxy upstreams.
 
 #[cfg(unix)]
-use std::{collections::HashMap, sync::{Mutex, OnceLock}, time::Instant};
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+    time::Instant,
+};
 
 use crate::config::{DnsDiscoveryConfig, DockerDiscoveryConfig, KubernetesDiscoveryConfig};
 
@@ -22,7 +26,10 @@ pub async fn docker(config: &DockerDiscoveryConfig) -> Vec<String> {
     {
         let key = format!(
             "{}|{}|{}|{:?}",
-            config.socket.display(), config.port, config.scheme, config.labels
+            config.socket.display(),
+            config.port,
+            config.scheme,
+            config.labels
         );
         if let Some(cached) = docker_cache()
             .lock()
@@ -33,13 +40,16 @@ pub async fn docker(config: &DockerDiscoveryConfig) -> Vec<String> {
             return cached.targets.clone();
         }
         let targets = docker_query(config).await;
-        docker_cache().lock().expect("docker discovery cache").insert(
-            key,
-            CachedDocker {
-                created: Instant::now(),
-                targets: targets.clone(),
-            },
-        );
+        docker_cache()
+            .lock()
+            .expect("docker discovery cache")
+            .insert(
+                key,
+                CachedDocker {
+                    created: Instant::now(),
+                    targets: targets.clone(),
+                },
+            );
         targets
     }
     #[cfg(not(unix))]
@@ -135,7 +145,10 @@ async fn docker_query(config: &DockerDiscoveryConfig) -> Vec<String> {
         .into_iter()
         .filter(|container| {
             config.labels.iter().all(|(key, value)| {
-                container.labels.get(key).is_some_and(|actual| actual == value)
+                container
+                    .labels
+                    .get(key)
+                    .is_some_and(|actual| actual == value)
             })
         })
         .flat_map(|container| container.network_settings.networks.into_values())

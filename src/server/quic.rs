@@ -37,7 +37,8 @@ pub fn spawn(
         .map_err(|error| error.to_string())?
     };
     #[cfg(not(unix))]
-    let endpoint = quinn::Endpoint::server(server_config, bind).map_err(|error| error.to_string())?;
+    let endpoint =
+        quinn::Endpoint::server(server_config, bind).map_err(|error| error.to_string())?;
     let address = endpoint.local_addr().map_err(|error| error.to_string())?;
     tracing::info!(%address, "listening for HTTP/3 connections over QUIC");
 
@@ -89,7 +90,9 @@ pub fn spawn(
                         let mut body = BytesMut::new();
                         loop {
                             match stream.recv_data().await {
-                                Ok(Some(mut chunk)) => body.extend_from_slice(&chunk.copy_to_bytes(chunk.remaining())),
+                                Ok(Some(mut chunk)) => {
+                                    body.extend_from_slice(&chunk.copy_to_bytes(chunk.remaining()))
+                                }
                                 Ok(None) => break,
                                 Err(error) => {
                                     tracing::debug!(%error, "HTTP/3 request body failed");
@@ -103,7 +106,10 @@ pub fn spawn(
                             .await
                             .expect("HTTP request handler is infallible");
                         let (parts, mut body) = response.into_parts();
-                        if let Err(error) = stream.send_response(hyper::Response::from_parts(parts, ())).await {
+                        if let Err(error) = stream
+                            .send_response(hyper::Response::from_parts(parts, ()))
+                            .await
+                        {
                             tracing::debug!(%error, "HTTP/3 response headers failed");
                             return;
                         }

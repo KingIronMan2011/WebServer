@@ -90,7 +90,9 @@ upstream = "http://127.0.0.1:3000"
     .expect("write invalid global config");
 
     let config = Config::load(&config).expect("load configuration");
-    let error = config.validate().expect_err("HTTP/3 without TLS is invalid");
+    let error = config
+        .validate()
+        .expect_err("HTTP/3 without TLS is invalid");
     assert!(error.to_string().contains("tls.http3 requires tls.enabled"));
 }
 
@@ -114,6 +116,8 @@ port = 0
     );
 
     let config = Config::load(&config).expect("load configuration");
-    let error = config.validate().expect_err("invalid configuration is rejected");
+    let error = config
+        .validate()
+        .expect_err("invalid configuration is rejected");
     assert!(error.to_string().contains("CORS"));
 }

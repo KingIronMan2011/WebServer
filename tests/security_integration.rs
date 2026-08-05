@@ -84,9 +84,7 @@ fn applies_cors_preflight_before_serving_the_route_and_rate_limits_clients() {
     let config = directory.0.join("webserver.toml");
     fs::write(
         &config,
-        format!(
-            "[server]\nbind = \"127.0.0.1:{port}\"\nrate_limit_per_minute = 1\n"
-        ),
+        format!("[server]\nbind = \"127.0.0.1:{port}\"\nrate_limit_per_minute = 1\n"),
     )
     .expect("write global configuration");
     fs::write(

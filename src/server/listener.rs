@@ -47,6 +47,13 @@ pub async fn run(config: Config) -> Result<()> {
         Arc::clone(&connections),
     )
     .await?;
+    let admin_listener = match (state.read().await.admin.enabled, tls.clone()) {
+        (true, Some(tls)) => {
+            Some(crate::admin::spawn(Arc::clone(&state), tls, shutdown.clone()).await?)
+        }
+        (true, None) => return Err(crate::error::Error::Config("admin API requires TLS".into())),
+        (false, _) => None,
+    };
     let quic_listener = spawn_quic_listener(&state, tls.clone(), shutdown.clone()).await?;
 
     #[cfg(unix)]
@@ -69,6 +76,9 @@ pub async fn run(config: Config) -> Result<()> {
         let _ = listener.await;
     }
     if let Some(listener) = quic_listener {
+        let _ = listener.await;
+    }
+    if let Some(listener) = admin_listener {
         let _ = listener.await;
     }
     connections.wait_for_all().await;

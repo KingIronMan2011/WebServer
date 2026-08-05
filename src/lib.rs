@@ -1,5 +1,6 @@
 //! Reusable Webserver components for the binary and fuzz targets.
 
+pub mod admin;
 pub mod app;
 pub mod cli;
 pub mod config;

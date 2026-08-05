@@ -41,9 +41,20 @@ where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
     serve_buffered(
-        request, upstreams, strategy, route_prefix, base_path, rewrite_prefix,
-        max_connections, retries, retry_backoff_ms, peer, original_host, timeout_secs,
-    ).await
+        request,
+        upstreams,
+        strategy,
+        route_prefix,
+        base_path,
+        rewrite_prefix,
+        max_connections,
+        retries,
+        retry_backoff_ms,
+        peer,
+        original_host,
+        timeout_secs,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -227,6 +238,28 @@ fn failure(url: &str) {
 
 pub(crate) fn report_health(url: &str, healthy: bool) {
     if healthy { success(url) } else { failure(url) }
+}
+
+/// A safe snapshot for the management API. It intentionally exposes no
+/// internal synchronization details or request data.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct UpstreamStatus {
+    pub url: String,
+    pub active_connections: usize,
+    pub consecutive_failures: u32,
+    pub circuit_open: bool,
+}
+
+pub fn status(url: &str) -> UpstreamStatus {
+    let states = states().lock().expect("upstream state");
+    let state = states.get(url);
+    UpstreamStatus {
+        url: url.to_owned(),
+        active_connections: state.map_or(0, |state| state.active),
+        consecutive_failures: state.map_or(0, |state| state.consecutive_failures),
+        circuit_open: state
+            .is_some_and(|state| state.open_until.is_some_and(|until| until > Instant::now())),
+    }
 }
 
 fn upstream_uri(
