@@ -283,6 +283,8 @@ Get-Service Webserver
 
 Der APT-Repository-Container wird mit `apt-repo/` als eigenständigem Docker-Build-Kontext gebaut. Die Build-Stage klont den konfigurierten Quell-Branch und erstellt daraus Binary und Debian-Paket; das finale Image enthält ausschließlich nginx und das erzeugte APT-Repository für `amd64` auf Port `8080`.
 
+Ist das Quell-Repository privat, braucht der Build ein BuildKit-Secret `github_token` mit einem GitHub Fine-grained Token, der ausschließlich **Contents: Read** für dieses Repository besitzt. Der Token wird nur während des Clone-Schritts verwendet und ist weder im finalen Image noch in dessen History enthalten. In Dokploy wird er als Build-Secret mit genau diesem Namen hinterlegt.
+
 ```sh
 cd apt-repo
 docker build -t webserver-apt-repo .
