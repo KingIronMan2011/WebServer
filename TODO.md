@@ -84,9 +84,9 @@ Dieses Dokument ist der Arbeitsplan für den Server. Die erste HTTP/1.1-Version 
 
 ## v0.9 — Web-Dashboard
 
-- [ ] Web-Dashboard für Sites, Routen, Upstreams, Zertifikate, Logs und Metriken
-- [ ] Dashboard-Anmeldung über die Verwaltungs-API und Rollenmodell
-- [ ] Betriebsansichten für Health Checks, Tracing und Prometheus-Metriken
+- [x] Web-Dashboard für Sites, Routen, Upstreams, Zertifikate, Logs und Metriken
+- [x] Dashboard-Anmeldung über die Verwaltungs-API und Rollenmodell
+- [x] Betriebsansichten für Health Checks, Tracing und Prometheus-Metriken
 
 ## v1.0 — Stabile Server- und Verwaltungsoberfläche
 

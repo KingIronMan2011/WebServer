@@ -48,17 +48,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-linux-x86_64
+      - run: pnpm install --frozen-lockfile && pnpm build
+        working-directory: dashboard
       - run: cargo build --locked --release --target x86_64-unknown-linux-gnu
       - run: |
           mkdir -p release/webserver
           cp target/x86_64-unknown-linux-gnu/release/webserver release/webserver/
           cp -R packaging release/webserver/
+          cp -R dashboard/dist release/webserver/dashboard
           cp README.md TODO.md release/webserver/
           tar -C release -czf webserver-linux-x86_64.tar.gz webserver
       - uses: actions/upload-artifact@v4
@@ -73,18 +84,29 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-windows-x86_64
+      - run: pnpm install --frozen-lockfile && pnpm build
+        working-directory: dashboard
       - run: cargo build --locked --release --target x86_64-pc-windows-msvc
       - shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release\webserver | Out-Null
           Copy-Item target\x86_64-pc-windows-msvc\release\webserver.exe release\webserver\
           Copy-Item packaging release\webserver\packaging -Recurse
+          Copy-Item dashboard\dist release\webserver\dashboard -Recurse
           Copy-Item README.md, TODO.md release\webserver\
           Compress-Archive -Path release\webserver -DestinationPath webserver-windows-x86_64.zip
       - uses: actions/upload-artifact@v4

@@ -257,6 +257,7 @@ fn router(state: AdminState) -> Router {
         .route("/api/v1/certificates", get(list_certificates))
         .route("/api/v1/logs", get(list_audit_log))
         .route("/api/v1/metrics", get(metrics))
+        .route("/api/v1/observability", get(observability))
         .route("/api/v1/openapi.json", get(openapi))
         .layer(SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-webserver-api-version"),
@@ -968,6 +969,36 @@ async fn metrics(
         .into_response()
 }
 
+async fn observability(
+    State(state): State<AdminState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    if authenticated_user(&state.database, &jar, &headers).await.is_none() {
+        return ApiError::response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "authentication required",
+        );
+    }
+    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        .ok()
+        .or_else(|| std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok());
+    let config = state.config.read().await;
+    Json(serde_json::json!({
+        "tracing": {
+            "enabled": endpoint.is_some(),
+            "exporter": if endpoint.is_some() { "otlp" } else { "none" },
+            "endpoint": endpoint,
+        },
+        "prometheus": {
+            "enabled": config.server.metrics_path.is_some(),
+            "path": config.server.metrics_path.clone(),
+        }
+    }))
+    .into_response()
+}
+
 async fn openapi() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "openapi": "3.1.0",
@@ -985,6 +1016,7 @@ async fn openapi() -> Json<serde_json::Value> {
             "/api/v1/certificates": { "get": { "summary": "List certificate sources and hosts", "security": [{ "adminSession": [] }, { "bearerSession": [] }], "responses": { "200": { "description": "Certificate metadata without private keys" } } } },
             "/api/v1/logs": { "get": { "summary": "Read recent management audit log", "security": [{ "adminSession": [] }, { "bearerSession": [] }], "responses": { "200": { "description": "Latest audit events" } } } },
             "/api/v1/metrics": { "get": { "summary": "Read Prometheus metrics as JSON", "security": [{ "adminSession": [] }, { "bearerSession": [] }], "responses": { "200": { "description": "Metrics snapshot" } } } }
+            ,"/api/v1/observability": { "get": { "summary": "Read tracing and Prometheus configuration", "security": [{ "adminSession": [] }, { "bearerSession": [] }], "responses": { "200": { "description": "Observability status" } } } }
         }
     }))
 }

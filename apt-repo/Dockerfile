@@ -1,10 +1,9 @@
-FROM rust:bookworm AS build
+FROM debian:bookworm AS source
 
 ARG SOURCE_REPOSITORY=https://github.com/KingIronMan2011/WebServer.git
 ARG SOURCE_REF=main
 
 RUN apt-get update && apt-get install --no-install-recommends -y ca-certificates git && rm -rf /var/lib/apt/lists/*
-COPY debian/postinst /tmp/postinst
 WORKDIR /src
 RUN --mount=type=secret,id=github_token,required=false \
     set -eu; \
@@ -16,11 +15,23 @@ RUN --mount=type=secret,id=github_token,required=false \
       git clone --depth 1 --branch "$SOURCE_REF" "$SOURCE_REPOSITORY" .; \
     fi
 
+FROM node:bookworm AS dashboard
+
+COPY --from=source /src/dashboard /dashboard
+WORKDIR /dashboard
+RUN corepack enable && pnpm install --frozen-lockfile && pnpm build
+
+FROM rust:bookworm AS build
+
+COPY --from=source /src /src
+COPY debian/postinst /tmp/postinst
+WORKDIR /src
 RUN cargo build --locked --release
+COPY --from=dashboard /dashboard/dist /dashboard
 
 RUN set -eux; \
     version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"; \
-    install -d /package/DEBIAN /package/usr/local/bin /package/lib/systemd/system /package/usr/share/doc/webserver /package/usr/share/webserver; \
+    install -d /package/DEBIAN /package/usr/local/bin /package/lib/systemd/system /package/usr/share/doc/webserver /package/usr/share/webserver/dashboard; \
     install -m 0755 target/release/webserver /package/usr/local/bin/webserver; \
     install -m 0644 packaging/systemd/webserver.service /package/lib/systemd/system/webserver.service; \
     install -m 0755 /tmp/postinst /package/DEBIAN/postinst; \
@@ -30,6 +41,7 @@ RUN set -eux; \
     cp README.md /package/usr/share/doc/webserver/README.md; \
     cp LICENSE /package/usr/share/doc/webserver/LICENSE; \
     cp LICENSE /package/usr/share/doc/webserver/copyright; \
+    cp -a /dashboard/dist/. /package/usr/share/webserver/dashboard/; \
     dpkg-deb --build --root-owner-group /package "/webserver_${version}_amd64.deb"
 
 FROM debian:bookworm AS repository
@@ -41,9 +53,6 @@ COPY reprepro/distributions /tmp/distributions
 COPY --from=build /webserver_*_amd64.deb /tmp/
 COPY --from=build /src/LICENSE /repo/LICENSE
 
-# The secret is base64 encoded so Dokploy can store it as a single build-secret
-# value. The key only exists in this intermediate image layer and is removed
-# before the nginx runtime image is assembled.
 RUN --mount=type=secret,id=apt_gpg_private_key_b64,required=true \
     set -eu; \
     test -n "$APT_GPG_FINGERPRINT"; \
@@ -67,7 +76,5 @@ COPY --from=repository /repo/webserver-archive-keyring.asc /usr/share/nginx/html
 COPY --from=repository /repo/webserver-archive-keyring.gpg /usr/share/nginx/html/webserver-archive-keyring.gpg
 COPY --from=repository /repo/LICENSE /usr/share/nginx/html/LICENSE
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-# The base image's welcome/error pages would otherwise be exposed or take
-# precedence over the repository directory listing.
 RUN rm -f /usr/share/nginx/html/index.html /usr/share/nginx/html/50x.html
 EXPOSE 8080
