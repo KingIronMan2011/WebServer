@@ -307,7 +307,7 @@ async fn bind_tcp(bind: std::net::SocketAddr) -> Result<TcpListener> {
         socket.bind(&bind.into())?;
         socket.listen(1024)?;
         socket.set_nonblocking(true)?;
-        return Ok(TcpListener::from_std(socket.into())?);
+        Ok(TcpListener::from_std(socket.into())?)
     }
     #[cfg(not(unix))]
     {
