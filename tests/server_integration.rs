@@ -76,15 +76,32 @@ fn request_bytes(port: u16, request: &str) -> Vec<u8> {
 }
 
 fn start_server(config: &Path) -> ChildProcess {
-    ChildProcess(
-        Command::new(binary())
-            .args(["run", "--config"])
-            .arg(config)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("start webserver"),
-    )
+    let mut child = Command::new(binary())
+        .args(["run", "--config"])
+        .arg(config)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start webserver");
+    thread::sleep(Duration::from_millis(100));
+    if let Some(status) = child.try_wait().expect("read server status") {
+        let mut stderr = String::new();
+        let mut stdout = String::new();
+        child
+            .stdout
+            .take()
+            .expect("capture server stdout")
+            .read_to_string(&mut stdout)
+            .expect("read server stdout");
+        child
+            .stderr
+            .take()
+            .expect("capture server stderr")
+            .read_to_string(&mut stderr)
+            .expect("read server stderr");
+        panic!("server exited early with {status}: {stdout}{stderr}");
+    }
+    ChildProcess(child)
 }
 
 #[test]
@@ -118,7 +135,7 @@ fn serves_static_files_and_proxies_requests() {
     fs::write(
         sites.join("localhost.conf"),
         format!(
-            "host = \"localhost\"\n\n[[routes]]\npath_prefix = \"/\"\nkind = \"static\"\nroot = \"../public\"\nresponse_headers = {{ cache-control = \"public, max-age=3600\" }}\nerror_pages = {{ 404 = \"../errors/not-found.html\" }}\n\n[[routes]]\npath_prefix = \"/go\"\nkind = \"redirect\"\nlocation = \"https://example.test/target\"\nstatus = 302\n\n[[routes]]\npath_prefix = \"/api\"\nkind = \"proxy\"\nupstream = \"http://127.0.0.1:{upstream_port}\"\n"
+            "host = \"localhost\"\n\n[[routes]]\npath_prefix = \"/\"\nkind = \"static\"\nroot = \"../public\"\nresponse_headers = {{ cache-control = \"public, max-age=3600\" }}\nerror_pages = {{ \"404\" = \"../errors/not-found.html\" }}\n\n[[routes]]\npath_prefix = \"/go\"\nkind = \"redirect\"\nlocation = \"https://example.test/target\"\nstatus = 302\n\n[[routes]]\npath_prefix = \"/api\"\nkind = \"proxy\"\nupstream = \"http://127.0.0.1:{upstream_port}\"\n"
         ),
     )
     .expect("write site configuration");

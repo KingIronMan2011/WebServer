@@ -26,6 +26,7 @@ pub struct TlsManager {
 
 impl TlsManager {
     pub async fn start(config: &Config) -> Result<Arc<Self>> {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let mut certificates = config.tls.certificates.clone();
         if let Some(dns) = &config.tls.dns_challenge {
             let email = config.tls.email.as_deref().ok_or_else(|| {

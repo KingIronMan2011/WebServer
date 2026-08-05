@@ -28,6 +28,8 @@ RUN set -eux; \
     install -m 0644 packaging/sites/localhost.conf /package/usr/share/webserver/localhost.conf; \
     printf 'Package: webserver\nVersion: %s\nSection: web\nPriority: optional\nArchitecture: amd64\nMaintainer: Webserver maintainers\nDescription: Caddy-inspired reverse proxy and web server\n' "$version" > /package/DEBIAN/control; \
     cp README.md /package/usr/share/doc/webserver/README.md; \
+    cp LICENSE /package/usr/share/doc/webserver/LICENSE; \
+    cp LICENSE /package/usr/share/doc/webserver/copyright; \
     dpkg-deb --build --root-owner-group /package "/webserver_${version}_amd64.deb"
 
 FROM debian:bookworm AS repository
@@ -37,6 +39,7 @@ ARG APT_GPG_FINGERPRINT
 RUN apt-get update && apt-get install --no-install-recommends -y reprepro gnupg ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY reprepro/distributions /tmp/distributions
 COPY --from=build /webserver_*_amd64.deb /tmp/
+COPY --from=build /src/LICENSE /repo/LICENSE
 
 # The secret is base64 encoded so Dokploy can store it as a single build-secret
 # value. The key only exists in this intermediate image layer and is removed
@@ -60,6 +63,7 @@ COPY --from=repository /repo/dists /usr/share/nginx/html/dists
 COPY --from=repository /repo/pool /usr/share/nginx/html/pool
 COPY --from=repository /repo/webserver-archive-keyring.asc /usr/share/nginx/html/webserver-archive-keyring.asc
 COPY --from=repository /repo/webserver-archive-keyring.gpg /usr/share/nginx/html/webserver-archive-keyring.gpg
+COPY --from=repository /repo/LICENSE /usr/share/nginx/html/LICENSE
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 # The base image's welcome/error pages would otherwise be exposed or take
 # precedence over the repository directory listing.

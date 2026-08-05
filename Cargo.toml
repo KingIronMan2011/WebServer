@@ -3,6 +3,7 @@ name = "webserver"
 version = "0.6.0"
 edition = "2024"
 description = "A Caddy-inspired reverse proxy and web server written in Rust."
+license = "MIT"
 publish = false
 
 [dependencies]

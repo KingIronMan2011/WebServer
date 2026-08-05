@@ -4,6 +4,8 @@ Ein in Rust geschriebener Webserver und Reverse Proxy mit einer schlanken
 TOML-Konfiguration. Das Projekt bündelt Static-File-Serving, TLS,
 Load-Balancing, Observability und moderne HTTP-Protokolle in einem Binary.
 
+![Lizenz: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+
 **Aktueller Stand: v0.6.0.** Der vollständige nächste Ausbauplan steht in
 [TODO.md](TODO.md).
 
@@ -148,7 +150,7 @@ path_prefix = "/assets"
 kind = "static"
 root = "/var/www/webserver/assets"
 response_headers = { cache-control = "public, max-age=3600", x-content-type-options = "nosniff" }
-error_pages = { 404 = "/var/www/webserver/errors/not-found.html" }
+error_pages = { "404" = "/var/www/webserver/errors/not-found.html" }
 
 [[routes]]
 path_prefix = "/old"
@@ -294,3 +296,7 @@ V0.6 ist abgeschlossen. Als Nächstes folgen eine lokale Verwaltungs-API
 (V0.7), eine einheitliche Verwaltungs- und Zugriffsschicht (V0.8), ein
 Web-Dashboard (V0.9) und danach die stabile V1.0-Oberfläche. Details stehen in
 [TODO.md](TODO.md).
+
+## Lizenz
+
+Dieses Projekt steht unter der [MIT-Lizenz](LICENSE).

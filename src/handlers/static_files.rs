@@ -180,15 +180,18 @@ pub async fn serve<B>(
 
 pub async fn custom_error(
     status: StatusCode,
-    pages: &BTreeMap<u16, PathBuf>,
+    pages: &BTreeMap<String, PathBuf>,
     site: &crate::config::SiteConfig,
 ) -> Option<Response<Body>> {
-    let path = site.static_path(pages.get(&status.as_u16())?);
+    let path = site.static_path(pages.get(&status.as_u16().to_string())?);
     let bytes = tokio::fs::read(&path).await.ok()?;
-    let content_type = mime_guess::from_path(path)
+    let mut content_type = mime_guess::from_path(path)
         .first_or_octet_stream()
         .essence_str()
         .to_owned();
+    if content_type == "text/html" {
+        content_type.push_str("; charset=utf-8");
+    }
     Some(response::full(status, &content_type, Bytes::from(bytes)))
 }
 

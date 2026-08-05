@@ -164,7 +164,7 @@ pub struct RouteConfig {
     pub response_headers: BTreeMap<String, String>,
     /// Optional HTML (or other) documents keyed by HTTP error status, e.g. `404`.
     #[serde(default)]
-    pub error_pages: BTreeMap<u16, PathBuf>,
+    pub error_pages: BTreeMap<String, PathBuf>,
     #[serde(default)]
     pub cors: Option<CorsConfig>,
     #[serde(flatten)]
@@ -693,7 +693,10 @@ impl Config {
                 .map_err(|_| Error::Config(format!("invalid response header value for {name}")))?;
         }
         for (status, path) in &route.error_pages {
-            if !(400..600).contains(status) {
+            let status = status.parse::<u16>().map_err(|_| {
+                Error::Config(format!("error page status must be numeric: {status}"))
+            })?;
+            if !(400..600).contains(&status) {
                 return Err(Error::Config(format!(
                     "error page status must be 4xx or 5xx: {status}"
                 )));
@@ -941,7 +944,7 @@ fn route_table(route: &RouteConfig) -> Table {
     if !route.error_pages.is_empty() {
         let mut pages = Table::new();
         for (status, path) in &route.error_pages {
-            pages[&status.to_string()] = value(path.to_string_lossy().to_string());
+            pages[status] = value(path.to_string_lossy().to_string());
         }
         table["error_pages"] = Item::Table(pages);
     }
