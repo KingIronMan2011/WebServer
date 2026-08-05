@@ -1,0 +1,7 @@
+Origin: Webserver
+Label: Webserver APT Repository
+Codename: stable
+Architectures: amd64
+Components: main
+Description: Webserver packages
+SignWith: __GPG_KEY_FINGERPRINT__

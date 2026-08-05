@@ -31,13 +31,29 @@ RUN set -eux; \
     dpkg-deb --build --root-owner-group /package "/webserver_${version}_amd64.deb"
 
 FROM debian:bookworm AS repository
-RUN apt-get update && apt-get install --no-install-recommends -y dpkg-dev && rm -rf /var/lib/apt/lists/*
-COPY --from=build /webserver_*_amd64.deb /repo/pool/main/w/webserver/
-RUN set -eux; \
-    install -d /repo/dists/stable/main/binary-amd64; cd /repo; \
-    dpkg-scanpackages --arch amd64 pool /dev/null > dists/stable/main/binary-amd64/Packages; \
-    gzip -9c dists/stable/main/binary-amd64/Packages > dists/stable/main/binary-amd64/Packages.gz; \
-    { printf 'Origin: Webserver\nLabel: Webserver\nSuite: stable\nCodename: stable\nArchitectures: amd64\nComponents: main\n'; printf 'Date: '; date -Ru; printf 'SHA256:\n'; for file in dists/stable/main/binary-amd64/Packages dists/stable/main/binary-amd64/Packages.gz; do printf ' %s %s %s\n' "$(sha256sum "$file" | cut -d' ' -f1)" "$(stat -c%s "$file")" "$file"; done; } > dists/stable/Release
+
+ARG APT_GPG_FINGERPRINT
+
+RUN apt-get update && apt-get install --no-install-recommends -y reprepro gnupg ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY reprepro/distributions /tmp/distributions
+COPY --from=build /webserver_*_amd64.deb /tmp/
+
+# The secret is base64 encoded so Dokploy can store it as a single build-secret
+# value. The key only exists in this intermediate image layer and is removed
+# before the nginx runtime image is assembled.
+RUN --mount=type=secret,id=apt_gpg_private_key_b64,required=true \
+    set -eu; \
+    test -n "$APT_GPG_FINGERPRINT"; \
+    export GNUPGHOME=/tmp/gnupg; \
+    install -d -m 0700 "$GNUPGHOME" /repo/conf; \
+    base64 -d /run/secrets/apt_gpg_private_key_b64 | gpg --batch --import; \
+    fingerprint="$(gpg --batch --with-colons --list-secret-keys "$APT_GPG_FINGERPRINT" | awk -F: '/^fpr:/{print $10; exit}')"; \
+    test "$fingerprint" = "$APT_GPG_FINGERPRINT"; \
+    sed "s/__GPG_KEY_FINGERPRINT__/$fingerprint/" /tmp/distributions > /repo/conf/distributions; \
+    reprepro -b /repo includedeb stable /tmp/webserver_*_amd64.deb; \
+    gpg --batch --armor --export "$fingerprint" > /repo/webserver-archive-keyring.asc; \
+    gpg --batch --export "$fingerprint" > /repo/webserver-archive-keyring.gpg; \
+    rm -rf "$GNUPGHOME" /tmp/webserver_*_amd64.deb
 
 FROM nginx:alpine
 COPY --from=repository /repo /usr/share/nginx/html

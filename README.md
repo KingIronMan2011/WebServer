@@ -281,20 +281,37 @@ Get-Service Webserver
 
 ## Docker-APT-Repository
 
-Der APT-Repository-Container wird mit `apt-repo/` als eigenständigem Docker-Build-Kontext gebaut. Die Build-Stage klont den konfigurierten Quell-Branch und erstellt daraus Binary und Debian-Paket; das finale Image enthält ausschließlich nginx und das erzeugte APT-Repository für `amd64` auf Port `8080`.
+Der APT-Repository-Container wird mit `apt-repo/` als eigenständigem Docker-Build-Kontext gebaut. Die Build-Stage klont den konfigurierten Quell-Branch und erstellt daraus Binary und Debian-Paket. Anschließend verwaltet `reprepro` das Repository, erzeugt `dists/`, `pool/`, `Release`, `InRelease` und `Release.gpg` und signiert die Metadaten. Das finale Image enthält ausschließlich nginx und die fertigen Repository-Dateien für `amd64` auf Port `8080`.
 
-Ist das Quell-Repository privat, braucht der Build ein BuildKit-Secret `github_token` mit einem GitHub Fine-grained Token, der ausschließlich **Contents: Read** für dieses Repository besitzt. Der Token wird nur während des Clone-Schritts verwendet und ist weder im finalen Image noch in dessen History enthalten. In Dokploy wird er als Build-Secret mit genau diesem Namen hinterlegt.
+Für den privaten Quell-Checkout wird ein BuildKit-Secret `github_token` mit einem GitHub Fine-grained Token benötigt, der nur **Contents: Read** für dieses Repository besitzt. Zusätzlich benötigt reprepro ein dediziertes, passwortloses APT-Signierschlüsselpaar. Der private Schlüssel wird als einzeiliges Base64-Build-Secret `apt_gpg_private_key_b64` hinterlegt; der Fingerprint wird als Build-Argument `APT_GPG_FINGERPRINT` gesetzt. Beide Secrets werden nur in der Build-Stage verwendet und gelangen nicht in das nginx-Image.
+
+```sh
+# Einmalig: dedizierten Signierschlüssel erstellen und dessen Fingerprint notieren.
+gpg --quick-generate-key 'Webserver APT Repository <packages@example.invalid>' rsa4096 sign 0
+gpg --list-secret-keys --keyid-format=long
+
+# Den Inhalt dieser einen Zeile als Dokploy-Build-Secret apt_gpg_private_key_b64 hinterlegen.
+gpg --armor --export-secret-keys FINGERPRINT | base64 -w 0
+```
+
+Lokal wird mit denselben Build-Inputs gebaut:
 
 ```sh
 cd apt-repo
-docker build -t webserver-apt-repo .
+docker build --secret id=github_token,src=./github-token \
+  --secret id=apt_gpg_private_key_b64,src=./apt-gpg-private-key.b64 \
+  --build-arg APT_GPG_FINGERPRINT=FINGERPRINT \
+  -t webserver-apt-repo .
 docker run --rm -p 8080:8080 webserver-apt-repo
 ```
 
-Auf einem Debian-/Ubuntu-Client wird es einmalig als vertrauenswürdige Quelle eingebunden (für einen öffentlichen Betrieb sollte die URL per TLS ausgeliefert und das Repository zusätzlich GPG-signiert werden):
+Auf einem Debian-/Ubuntu-Client wird zuerst der veröffentlichte Schlüssel installiert, danach die signierte Quelle eingebunden:
 
 ```sh
-echo 'deb [trusted=yes] http://REPOSITORY-HOST:8080 stable main' | sudo tee /etc/apt/sources.list.d/webserver.list
+curl -fsSL https://REPOSITORY-HOST/webserver-archive-keyring.gpg | \
+  sudo tee /usr/share/keyrings/webserver-archive-keyring.gpg >/dev/null
+echo 'deb [signed-by=/usr/share/keyrings/webserver-archive-keyring.gpg] https://REPOSITORY-HOST stable main' | \
+  sudo tee /etc/apt/sources.list.d/webserver.list
 sudo apt update
 sudo apt install webserver
 ```
