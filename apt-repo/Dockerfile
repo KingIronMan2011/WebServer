@@ -59,6 +59,8 @@ RUN --mount=type=secret,id=apt_gpg_private_key_b64,required=true \
     rm -rf "$GNUPGHOME" /tmp/webserver_*_amd64.deb
 
 FROM nginx:alpine
+ENV TZ=Europe/Berlin
+RUN apk add --no-cache tzdata
 COPY --from=repository /repo/dists /usr/share/nginx/html/dists
 COPY --from=repository /repo/pool /usr/share/nginx/html/pool
 COPY --from=repository /repo/webserver-archive-keyring.asc /usr/share/nginx/html/webserver-archive-keyring.asc
