@@ -9,7 +9,10 @@ use std::sync::{
 use std::path::PathBuf;
 
 use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
+use hyper_util::{
+    rt::{TokioExecutor, TokioIo},
+    server::conn::auto,
+};
 use tokio::net::TcpListener;
 use tokio::{
     sync::{Notify, RwLock},
@@ -41,6 +44,7 @@ pub async fn run(config: Config) -> Result<()> {
         Arc::clone(&connections),
     )
     .await?;
+    let quic_listener = spawn_quic_listener(&state, tls.clone(), shutdown.clone()).await?;
 
     #[cfg(unix)]
     let result = run_unix(
@@ -59,6 +63,9 @@ pub async fn run(config: Config) -> Result<()> {
 
     shutdown.cancel();
     if let Some(listener) = tls_listener {
+        let _ = listener.await;
+    }
+    if let Some(listener) = quic_listener {
         let _ = listener.await;
     }
     connections.wait_for_all().await;
@@ -85,6 +92,7 @@ pub async fn run_service(
         Arc::clone(&connections),
     )
     .await?;
+    let quic_listener = spawn_quic_listener(&state, tls.clone(), shutdown_token.clone()).await?;
 
     let result = loop {
         tokio::select! {
@@ -99,6 +107,9 @@ pub async fn run_service(
     };
     shutdown_token.cancel();
     if let Some(listener) = tls_listener {
+        let _ = listener.await;
+    }
+    if let Some(listener) = quic_listener {
         let _ = listener.await;
     }
     connections.wait_for_all().await;
@@ -180,10 +191,10 @@ async fn accept_one(
         let service = service_fn(move |request| {
             connection::handle(request, peer, Arc::clone(&state), tls.clone(), false)
         });
-        if let Err(error) = hyper::server::conn::http1::Builder::new()
-            .max_buf_size(max_header_bytes)
-            .serve_connection(TokioIo::new(stream), service)
-            .with_upgrades()
+        let mut builder = auto::Builder::new(TokioExecutor::new());
+        builder.http1().max_buf_size(max_header_bytes);
+        if let Err(error) = builder
+            .serve_connection_with_upgrades(TokioIo::new(stream), service)
             .await
         {
             tracing::debug!(%peer, %error, "connection closed with HTTP error");
@@ -245,10 +256,10 @@ async fn spawn_tls_listener(
                 let service = service_fn(move |request| {
                     connection::handle(request, peer, Arc::clone(&state), None, true)
                 });
-                if let Err(error) = hyper::server::conn::http1::Builder::new()
-                    .max_buf_size(max_header_bytes)
-                    .serve_connection(TokioIo::new(stream), service)
-                    .with_upgrades()
+                let mut builder = auto::Builder::new(TokioExecutor::new());
+                builder.http1().max_buf_size(max_header_bytes);
+                if let Err(error) = builder
+                    .serve_connection_with_upgrades(TokioIo::new(stream), service)
                     .await
                 {
                     tracing::debug!(%peer, %error, "connection closed with HTTPS error");
@@ -256,6 +267,25 @@ async fn spawn_tls_listener(
             });
         }
     })))
+}
+
+async fn spawn_quic_listener(
+    state: &Arc<RwLock<Config>>,
+    tls: Option<Arc<TlsManager>>,
+    shutdown: CancellationToken,
+) -> Result<Option<JoinHandle<()>>> {
+    let Some(tls) = tls else {
+        return Ok(None);
+    };
+    let config = state.read().await;
+    if !config.tls.http3 {
+        return Ok(None);
+    }
+    let bind = config.tls.quic_bind.unwrap_or(config.tls.bind);
+    drop(config);
+    crate::server::quic::spawn(bind, tls, Arc::clone(state), shutdown)
+        .map(Some)
+        .map_err(crate::error::Error::Config)
 }
 
 #[derive(Default)]
@@ -312,6 +342,8 @@ async fn reload_config(state: &Arc<RwLock<Config>>, path: &PathBuf) {
             let mut current = state.write().await;
             let tls_changed = current.tls.enabled != config.tls.enabled
                 || current.tls.bind != config.tls.bind
+                || current.tls.http3 != config.tls.http3
+                || current.tls.quic_bind != config.tls.quic_bind
                 || current.tls.email != config.tls.email
                 || current.tls.certificate_cache != config.tls.certificate_cache;
             let domains_changed = current

@@ -13,7 +13,7 @@ use futures_util::StreamExt;
 use http_body_util::{BodyExt, Empty, StreamBody};
 use hyper::{
     Method, Request, Response, StatusCode,
-    body::{Frame, Incoming},
+    body::Frame,
     header::{
         ACCEPT_RANGES, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, ETAG, IF_MODIFIED_SINCE,
         IF_NONE_MATCH, LAST_MODIFIED, RANGE, VARY,
@@ -25,8 +25,8 @@ use tokio_util::io::ReaderStream;
 
 use crate::http::{Body, response};
 
-pub async fn serve(
-    request: &Request<Incoming>,
+pub async fn serve<B>(
+    request: &Request<B>,
     root: &Path,
     index_file: &str,
     prefix: &str,
@@ -203,7 +203,7 @@ fn stream_body(reader: impl tokio::io::AsyncRead + Unpin + Send + Sync + 'static
         .boxed()
 }
 
-fn accepted_encoding(request: &Request<Incoming>) -> Option<&'static str> {
+fn accepted_encoding<B>(request: &Request<B>) -> Option<&'static str> {
     let value = request
         .headers()
         .get("accept-encoding")?
@@ -253,7 +253,7 @@ fn file_headers(
     response
 }
 
-fn not_modified(request: &Request<Incoming>, etag: &str, modified: SystemTime) -> bool {
+fn not_modified<B>(request: &Request<B>, etag: &str, modified: SystemTime) -> bool {
     if let Some(value) = request
         .headers()
         .get(IF_NONE_MATCH)

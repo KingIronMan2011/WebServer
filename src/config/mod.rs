@@ -38,6 +38,12 @@ pub struct TlsConfig {
     pub enabled: bool,
     #[serde(default = "default_https_bind")]
     pub bind: SocketAddr,
+    /// Enable HTTP/3 over QUIC on UDP. It uses `bind` unless `quic_bind` is set.
+    #[serde(default)]
+    pub http3: bool,
+    /// Optional UDP address for HTTP/3/QUIC. Defaults to the HTTPS address.
+    #[serde(default)]
+    pub quic_bind: Option<SocketAddr>,
     pub email: Option<String>,
     #[serde(default = "default_certificate_cache")]
     pub certificate_cache: PathBuf,
@@ -54,6 +60,8 @@ impl Default for TlsConfig {
         Self {
             enabled: false,
             bind: default_https_bind(),
+            http3: false,
+            quic_bind: None,
             email: None,
             certificate_cache: default_certificate_cache(),
             certificates: Vec::new(),
@@ -204,12 +212,22 @@ pub enum RouteTarget {
         rewrite_prefix: Option<String>,
         #[serde(default)]
         health_check: Option<HealthCheckConfig>,
+        #[serde(default)]
+        dns_discovery: Option<DnsDiscoveryConfig>,
     },
     Redirect {
         location: String,
         #[serde(default = "default_redirect_status")]
         status: u16,
     },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DnsDiscoveryConfig {
+    pub host: String,
+    pub port: u16,
+    #[serde(default = "default_discovery_scheme")]
+    pub scheme: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -308,6 +326,9 @@ fn default_redirect_status() -> u16 {
 
 fn default_cors_methods() -> Vec<String> {
     vec!["GET".into(), "HEAD".into(), "OPTIONS".into()]
+}
+fn default_discovery_scheme() -> String {
+    "http".into()
 }
 fn default_index_file() -> String {
     "index.html".into()
@@ -507,6 +528,9 @@ impl Config {
                 self.validate_route(site, route)?;
             }
         }
+        if self.tls.http3 && !self.tls.enabled {
+            return Err(Error::Config("tls.http3 requires tls.enabled = true".into()));
+        }
         if self.tls.enabled {
             self.validate_local_certificates(&hosts)?;
             self.validate_dns_challenge()?;
@@ -664,12 +688,21 @@ impl Config {
                 base_path,
                 rewrite_prefix,
                 health_check,
+                dns_discovery,
                 ..
             } => {
                 let targets = proxy_upstreams(upstream.as_deref(), upstreams);
-                if targets.is_empty() {
+                if targets.is_empty() && dns_discovery.is_none() {
                     return Err(Error::Config(
                         "proxy route needs at least one upstream".into(),
+                    ));
+                }
+                if let Some(discovery) = dns_discovery
+                    && (discovery.host.is_empty()
+                        || !matches!(discovery.scheme.as_str(), "http" | "https"))
+                {
+                    return Err(Error::Config(
+                        "dns_discovery needs a host and http or https scheme".into(),
                     ));
                 }
                 let mut unique = HashSet::new();
@@ -989,6 +1022,7 @@ mod tests {
                         base_path: None,
                         rewrite_prefix: None,
                         health_check: None,
+                        dns_discovery: None,
                     },
                 },
             )

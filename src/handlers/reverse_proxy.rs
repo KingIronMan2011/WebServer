@@ -18,13 +18,12 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{
     Request, Response, StatusCode, Uri,
-    body::Incoming,
+    body::Body as HttpBody,
     header::{CONNECTION, HOST, HeaderName, HeaderValue},
 };
-use hyper_util::rt::TokioIo;
 
-pub async fn serve(
-    mut request: Request<Incoming>,
+pub async fn serve<B>(
+    request: Request<B>,
     upstreams: &[(&str, u32)],
     strategy: crate::config::LoadBalancing,
     route_prefix: &str,
@@ -36,116 +35,20 @@ pub async fn serve(
     peer: SocketAddr,
     original_host: &str,
     timeout_secs: u64,
-) -> Response<Body> {
-    let websocket = request.headers().get(CONNECTION).is_some_and(|value| {
-        value.to_str().is_ok_and(|value| {
-            value
-                .split(',')
-                .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
-        })
-    }) && request
-        .headers()
-        .get("upgrade")
-        .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"));
-    let client_upgrade = websocket.then(|| hyper::upgrade::on(&mut request));
-    if !websocket {
-        return serve_buffered(
-            request,
-            upstreams,
-            strategy,
-            route_prefix,
-            base_path,
-            rewrite_prefix,
-            max_connections,
-            retries,
-            retry_backoff_ms,
-            peer,
-            original_host,
-            timeout_secs,
-        )
-        .await;
-    }
-    let upstream = match select_upstream(upstreams, strategy) {
-        Some(upstream) => upstream,
-        None => return response::error(StatusCode::BAD_GATEWAY),
-    };
-    if !reserve(upstream, max_connections) {
-        return response::error(StatusCode::SERVICE_UNAVAILABLE);
-    }
-    let target_uri = match upstream_uri(
-        upstream,
-        request.uri(),
-        route_prefix,
-        base_path,
-        rewrite_prefix,
-    ) {
-        Ok(uri) => uri,
-        Err(error) => {
-            tracing::error!(%error, "invalid proxy target");
-            release(upstream);
-            return response::error(StatusCode::BAD_GATEWAY);
-        }
-    };
-    if !websocket {
-        remove_hop_by_hop_headers(request.headers_mut());
-    }
-    add_forwarded_headers(request.headers_mut(), peer, original_host);
-    if let Some(authority) = target_uri.authority()
-        && let Ok(value) = HeaderValue::from_str(authority.as_str())
-    {
-        request.headers_mut().insert(HOST, value);
-    }
-    *request.uri_mut() = target_uri;
-
-    let mut upstream_response = match tokio::time::timeout(
-        Duration::from_secs(timeout_secs),
-        client::shared().request(request.map(|body| body.boxed())),
-    )
-    .await
-    {
-        Ok(Ok(response)) => {
-            success(upstream);
-            response
-        }
-        Ok(Err(error)) => {
-            tracing::warn!(%error, "upstream request failed");
-            failure(upstream);
-            release(upstream);
-            return response::error(StatusCode::BAD_GATEWAY);
-        }
-        Err(_) => {
-            failure(upstream);
-            release(upstream);
-            return response::error(StatusCode::GATEWAY_TIMEOUT);
-        }
-    };
-    release(upstream);
-    if websocket && upstream_response.status() == StatusCode::SWITCHING_PROTOCOLS {
-        let upstream_upgrade = hyper::upgrade::on(&mut upstream_response);
-        tokio::spawn(async move {
-            let (Ok(client), Ok(upstream)) = (
-                client_upgrade.expect("websocket upgrade").await,
-                upstream_upgrade.await,
-            ) else {
-                return;
-            };
-            let _ = tokio::io::copy_bidirectional(
-                &mut TokioIo::new(client),
-                &mut TokioIo::new(upstream),
-            )
-            .await;
-        });
-    }
-    let (mut parts, body) = upstream_response.into_parts();
-    if !websocket {
-        remove_hop_by_hop_headers(&mut parts.headers);
-    }
-    Response::from_parts(parts, body.boxed())
+) -> Response<Body>
+where
+    B: HttpBody<Data = Bytes> + Send + 'static,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    serve_buffered(
+        request, upstreams, strategy, route_prefix, base_path, rewrite_prefix,
+        max_connections, retries, retry_backoff_ms, peer, original_host, timeout_secs,
+    ).await
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn serve_buffered(
-    request: Request<Incoming>,
+async fn serve_buffered<B>(
+    request: Request<B>,
     upstreams: &[(&str, u32)],
     strategy: crate::config::LoadBalancing,
     route_prefix: &str,
@@ -157,7 +60,11 @@ async fn serve_buffered(
     peer: SocketAddr,
     original_host: &str,
     timeout_secs: u64,
-) -> Response<Body> {
+) -> Response<Body>
+where
+    B: HttpBody<Data = Bytes> + Send + 'static,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     let (parts, body) = request.into_parts();
     let body = match body.collect().await {
         Ok(body) => body.to_bytes(),

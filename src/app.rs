@@ -75,6 +75,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                     base_path: None,
                     rewrite_prefix: None,
                     health_check: None,
+                    dns_discovery: None,
                 },
                 _ => {
                     return Err(crate::error::Error::Config(

@@ -7,10 +7,11 @@ use std::{
     time::Instant,
 };
 
+use bytes::Bytes;
 use hyper::{
     Request,
-    body::Incoming,
-    header::{CONTENT_LENGTH, ORIGIN, TRANSFER_ENCODING},
+    body::Body as HttpBody,
+    header::{CONTENT_LENGTH, HeaderValue, ORIGIN, TRANSFER_ENCODING},
 };
 use tokio::sync::RwLock;
 
@@ -21,13 +22,17 @@ use crate::{
     routing::router,
 };
 
-pub async fn handle(
-    request: Request<Incoming>,
+pub async fn handle<B>(
+    request: Request<B>,
     peer: SocketAddr,
     config: Arc<RwLock<Config>>,
     tls: Option<Arc<crate::tls::TlsManager>>,
     is_tls: bool,
-) -> Result<hyper::Response<Body>, Infallible> {
+) -> Result<hyper::Response<Body>, Infallible>
+where
+    B: HttpBody<Data = Bytes> + Send + 'static,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     let started = Instant::now();
     let config = config.read().await.clone();
     let context = RequestContext::from_request(&request);
@@ -43,24 +48,29 @@ pub async fn handle(
         if let Some(token) = context.path.strip_prefix("/.well-known/acme-challenge/")
             && let Some(key_authorization) = tls.challenge_response(token)
         {
-            return Ok(response::plain(StatusCode::OK, key_authorization));
+            return Ok(with_http3_alt_svc(
+                response::plain(StatusCode::OK, key_authorization),
+                &config,
+                is_tls,
+            ));
         }
         let host = context.host;
         if host.is_empty() {
-            return Ok(response::error(StatusCode::BAD_REQUEST));
+            return Ok(with_http3_alt_svc(response::error(StatusCode::BAD_REQUEST), &config, is_tls));
         }
         let target = request
             .uri()
             .path_and_query()
             .map(|value| value.as_str())
             .unwrap_or("/");
-        return Ok(response::redirect(format!("https://{host}{target}")));
+        return Ok(with_http3_alt_svc(response::redirect(format!("https://{host}{target}")), &config, is_tls));
     }
 
     if config.server.metrics_path.as_deref() == Some(context.path.as_str()) {
-        return Ok(response::plain(
-            StatusCode::OK,
-            crate::observability::metrics::prometheus(),
+        return Ok(with_http3_alt_svc(
+            response::plain(StatusCode::OK, crate::observability::metrics::prometheus()),
+            &config,
+            is_tls,
         ));
     }
 
@@ -77,10 +87,10 @@ pub async fn handle(
                 .iter()
                 .any(|network| network.contains(&client_ip)))
     {
-        return Ok(response::error(StatusCode::FORBIDDEN));
+        return Ok(with_http3_alt_svc(response::error(StatusCode::FORBIDDEN), &config, is_tls));
     }
     if !crate::server::limits::allow(client_ip, config.server.rate_limit_per_minute) {
-        return Ok(response::error(StatusCode::TOO_MANY_REQUESTS));
+        return Ok(with_http3_alt_svc(response::error(StatusCode::TOO_MANY_REQUESTS), &config, is_tls));
     }
 
     let matched = router::find(&config, &context.host, &context.path);
@@ -91,7 +101,7 @@ pub async fn handle(
         let mut response =
             response::empty_with_content_length(StatusCode::NO_CONTENT, "text/plain", 0);
         apply_cors(&mut response, origin.as_deref(), cors);
-        return Ok(response);
+        return Ok(with_http3_alt_svc(response, &config, is_tls));
     }
     let mut response = match request_size_error(&request, config.server.max_body_bytes) {
         Some(response) => response,
@@ -112,11 +122,29 @@ pub async fn handle(
                     max_connections_per_upstream,
                     retries,
                     retry_backoff_ms,
+                    dns_discovery,
                     ..
                 } => {
+                    let mut targets: Vec<(String, u32)> =
+                        crate::config::proxy_upstreams(upstream.as_deref(), upstreams)
+                            .into_iter()
+                            .map(|(url, weight)| (url.to_owned(), weight))
+                            .collect();
+                    if let Some(discovery) = dns_discovery {
+                        targets.extend(
+                            crate::upstream::discovery::dns(discovery)
+                                .await
+                                .into_iter()
+                                .map(|url| (url, 1)),
+                        );
+                    }
+                    let target_refs: Vec<(&str, u32)> = targets
+                        .iter()
+                        .map(|(url, weight)| (url.as_str(), *weight))
+                        .collect();
                     reverse_proxy::serve(
                         request,
-                        &crate::config::proxy_upstreams(upstream.as_deref(), upstreams),
+                        &target_refs,
                         *load_balancing,
                         &matched.route.path_prefix,
                         base_path.as_deref(),
@@ -154,10 +182,33 @@ pub async fn handle(
             apply_cors(&mut response, origin.as_deref(), cors);
         }
     }
+    advertise_http3(&mut response, &config, is_tls);
 
     tracing::info!(%peer, %method, %path, status = response.status().as_u16(), elapsed_ms = started.elapsed().as_millis(), "request completed");
     crate::observability::metrics::record(response.status().as_u16());
     Ok(response)
+}
+
+fn with_http3_alt_svc(
+    mut response: hyper::Response<Body>,
+    config: &Config,
+    is_tls: bool,
+) -> hyper::Response<Body> {
+    advertise_http3(&mut response, config, is_tls);
+    response
+}
+
+/// Announces the UDP HTTP/3 endpoint only from secure HTTP/1.1 and HTTP/2
+/// responses. Browsers ignore Alt-Svc received over plain HTTP by design.
+fn advertise_http3(response: &mut hyper::Response<Body>, config: &Config, is_tls: bool) {
+    if !is_tls || !config.tls.http3 {
+        return;
+    }
+    let port = config.tls.quic_bind.unwrap_or(config.tls.bind).port();
+    let value = format!(r#"h3=\":{port}\"; ma=86400"#);
+    if let Ok(value) = HeaderValue::from_str(&value) {
+        response.headers_mut().insert("alt-svc", value);
+    }
 }
 
 fn apply_cors(
@@ -203,7 +254,7 @@ fn apply_cors(
     headers.insert("vary", "Origin".parse().expect("valid header"));
 }
 
-fn client_ip(request: &Request<Incoming>, peer: SocketAddr, config: &Config) -> IpAddr {
+fn client_ip<B>(request: &Request<B>, peer: SocketAddr, config: &Config) -> IpAddr {
     if !config
         .server
         .trusted_proxies
@@ -221,8 +272,8 @@ fn client_ip(request: &Request<Incoming>, peer: SocketAddr, config: &Config) -> 
         .unwrap_or(peer.ip())
 }
 
-fn request_size_error(
-    request: &Request<Incoming>,
+fn request_size_error<B>(
+    request: &Request<B>,
     max_body_bytes: u64,
 ) -> Option<hyper::Response<Body>> {
     if request.headers().contains_key(TRANSFER_ENCODING) {

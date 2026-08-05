@@ -1,6 +1,6 @@
 //! Lightweight request metadata used for routing and logging.
 
-use hyper::{Request, body::Incoming};
+use hyper::Request;
 
 use crate::config::normalise_host;
 
@@ -10,7 +10,7 @@ pub struct RequestContext {
 }
 
 impl RequestContext {
-    pub fn from_request(request: &Request<Incoming>) -> Self {
+    pub fn from_request<B>(request: &Request<B>) -> Self {
         let host = request
             .headers()
             .get(hyper::header::HOST)

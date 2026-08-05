@@ -21,6 +21,7 @@ use crate::{
 pub struct TlsManager {
     acme_resolver: Option<Arc<ResolvesServerCertAcme>>,
     acceptor: TlsAcceptor,
+    server_config: Arc<ServerConfig>,
 }
 
 impl TlsManager {
@@ -70,17 +71,24 @@ impl TlsManager {
             local_hosts,
             acme: acme_resolver.clone(),
         };
-        let server_config = ServerConfig::builder()
+        let mut server_config = ServerConfig::builder()
             .with_no_client_auth()
             .with_cert_resolver(Arc::new(resolver));
+        server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        let server_config = Arc::new(server_config);
         Ok(Arc::new(Self {
             acme_resolver,
-            acceptor: TlsAcceptor::from(Arc::new(server_config)),
+            acceptor: TlsAcceptor::from(Arc::clone(&server_config)),
+            server_config,
         }))
     }
 
     pub fn acceptor(&self) -> TlsAcceptor {
         self.acceptor.clone()
+    }
+
+    pub fn server_config(&self) -> Arc<ServerConfig> {
+        Arc::clone(&self.server_config)
     }
 
     pub fn challenge_response(&self, token: &str) -> Option<String> {

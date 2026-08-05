@@ -85,7 +85,7 @@ Internet / Clients
 - ACME-Integration fuer automatische Let's-Encrypt-Zertifikate und Erneuerung
 - SNI und mehrere TLS-Sites auf einem Listener
 - HTTP/2
-- Spaeter: HTTP/3 ueber QUIC
+- HTTP/3 ueber QUIC (UDP)
 
 ### Bedienung und Konfiguration
 
@@ -160,6 +160,10 @@ max_connections = 1024
 [tls]
 enabled = true
 bind = "0.0.0.0:443"
+# Starts HTTP/3 on UDP/443; TCP HTTPS continues to serve HTTP/2 and HTTP/1.1.
+http3 = true
+# Optional when QUIC should use another UDP address. Defaults to `bind`.
+# quic_bind = "0.0.0.0:443"
 email = "admin@example.com"
 certificate_cache = "/etc/webserver/certificates/acme"
 ```

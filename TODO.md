@@ -61,9 +61,9 @@ Dieses Dokument ist der Arbeitsplan für den Server. Die erste HTTP/1.1-Version 
 
 ## v0.6 — Moderne Protokolle und Infrastruktur
 
-- [ ] HTTP/2
-- [ ] HTTP/3 / QUIC
-- [ ] DNS-basierte Upstream-Discovery
+- [x] HTTP/2
+- [x] HTTP/3 / QUIC
+- [x] DNS-basierte Upstream-Discovery
 - [ ] Docker-Discovery
 - [ ] Kubernetes-/Service-Discovery als optionales Modul
 - [ ] Zero-Downtime-Binary-Upgrades
