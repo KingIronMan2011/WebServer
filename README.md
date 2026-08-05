@@ -279,6 +279,23 @@ Stop-Service Webserver
 Get-Service Webserver
 ```
 
+## Docker-APT-Repository
+
+Das Docker-Image baut das Binary und das Debian-Paket direkt aus dem Arbeitsbaum; es lädt weder GitHub-Releases noch andere Build-Artefakte herunter. Es liefert anschließend ein APT-Repository für `amd64` auf Port `8080` aus.
+
+```sh
+docker build -f apt-repo/Dockerfile -t webserver-apt-repo .
+docker run --rm -p 8080:8080 webserver-apt-repo
+```
+
+Auf einem Debian-/Ubuntu-Client wird es einmalig als vertrauenswürdige Quelle eingebunden (für einen öffentlichen Betrieb sollte die URL per TLS ausgeliefert und das Repository zusätzlich GPG-signiert werden):
+
+```sh
+echo 'deb [trusted=yes] http://REPOSITORY-HOST:8080 stable main' | sudo tee /etc/apt/sources.list.d/webserver.list
+sudo apt update
+sudo apt install webserver
+```
+
 ## Releases
 
 Der Workflow [release.yml](.github/workflows/release.yml) baut bei einem Git-Tag wie `v0.1.0` ein Linux-x86_64-Release-Archiv mit Binary, Installer und systemd-Unit. Ein eigentlicher Paket-Repository-Feed (APT/RPM) ist noch nicht eingerichtet; das Archiv ist der sichere, einfache erste Distributionsweg.
