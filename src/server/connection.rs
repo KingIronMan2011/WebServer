@@ -57,10 +57,27 @@ pub async fn handle(
                     static_files::serve(&request, &root, index_file, &matched.route.path_prefix)
                         .await
                 }
-                RouteTarget::Proxy { upstream } => {
+                RouteTarget::Proxy {
+                    upstream,
+                    upstreams,
+                    load_balancing,
+                    base_path,
+                    rewrite_prefix,
+                    max_connections_per_upstream,
+                    retries,
+                    retry_backoff_ms,
+                    ..
+                } => {
                     reverse_proxy::serve(
                         request,
-                        upstream,
+                        &crate::config::proxy_upstreams(upstream.as_deref(), upstreams),
+                        *load_balancing,
+                        &matched.route.path_prefix,
+                        base_path.as_deref(),
+                        rewrite_prefix.as_deref(),
+                        *max_connections_per_upstream,
+                        *retries,
+                        *retry_backoff_ms,
                         peer,
                         &context.host,
                         config.server.upstream_timeout_secs,

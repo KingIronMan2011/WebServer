@@ -148,6 +148,43 @@ upstream = "http://127.0.0.1:3000"
 
 Eine Site-Datei besitzt einen Host und ihre Routen. Eine Route besitzt entweder `kind = "static"` mit `root` (und optional `index_file`) oder `kind = "proxy"` mit einem vollständigen HTTP-Upstream. Bei mehreren Treffern gewinnt die Route mit dem längsten passenden Pfadpraefix. Relative Static-Roots werden relativ zur jeweiligen Site-Datei aufgeloest.
 
+Eine Proxy-Route kann auch mehrere Ziele besitzen. Die Ziele werden global per Round Robin ausgewählt; das bisherige einzelne Feld `upstream` bleibt weiterhin gültig.
+
+```toml
+[[routes]]
+path_prefix = "/api"
+kind = "proxy"
+upstreams = [
+  "http://127.0.0.1:3000",
+  "http://127.0.0.1:3001",
+]
+```
+
+Für Produktionsrouten sind Gewichtungen und Resilienzregeln konfigurierbar:
+
+```toml
+[[routes]]
+path_prefix = "/api"
+kind = "proxy"
+load_balancing = "least_connections" # round_robin | weighted_round_robin | least_connections
+upstreams = [
+  { url = "http://127.0.0.1:3000", weight = 3 },
+  { url = "http://127.0.0.1:3001", weight = 1 },
+]
+retries = 2
+retry_backoff_ms = 100
+max_connections_per_upstream = 100
+base_path = "/v1"
+rewrite_prefix = "/internal"
+
+[routes.health_check]
+path = "/health"
+interval_secs = 10
+timeout_secs = 3
+```
+
+Aktive HTTP-Health-Checks erwarten einen 2xx-Status. Passive Fehler öffnen nach drei aufeinanderfolgenden Verbindungs- oder Timeout-Fehlern für 30 Sekunden einen Circuit Breaker. Normale Proxy-Requests werden bis zum bestehenden Request-Limit gepuffert und können deshalb mit exponentiellem Backoff wiederholt werden. WebSocket-Upgrades werden als bidirektionaler Stream durchgereicht.
+
 Sobald `tls.enabled = true` gesetzt ist, startet der Server zusätzlich auf Port 443. Für jede konfigurierte Site ohne lokales Zertifikat fordert er automatisch ein Let's-Encrypt-Zertifikat per HTTP-01 an, speichert es im `certificate_cache` und erneuert es automatisch. Port 80 bleibt dabei erforderlich: Nur `/.well-known/acme-challenge/...` wird dort für Let's Encrypt ausgeliefert, alle übrigen HTTP-Anfragen werden mit einem permanenten Redirect auf HTTPS weitergeleitet. DNS der jeweiligen Hosts muss vorher auf den Server zeigen und beide Ports müssen von außen erreichbar sein. Änderungen an TLS-Einstellungen oder Hostnamen werden erst nach einem Dienstneustart übernommen; Routen können weiter per Reload geändert werden.
 
 ### DNS-01 und Wildcard-Zertifikate

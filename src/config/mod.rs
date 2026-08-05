@@ -139,8 +139,85 @@ pub enum RouteTarget {
         index_file: String,
     },
     Proxy {
-        upstream: String,
+        /// Compatibility field for v0.1/v0.2 site files.
+        #[serde(default)]
+        upstream: Option<String>,
+        #[serde(default)]
+        upstreams: Vec<UpstreamConfig>,
+        #[serde(default)]
+        load_balancing: LoadBalancing,
+        #[serde(default = "default_retries")]
+        retries: u32,
+        #[serde(default = "default_retry_backoff_ms")]
+        retry_backoff_ms: u64,
+        #[serde(default)]
+        max_connections_per_upstream: usize,
+        #[serde(default)]
+        base_path: Option<String>,
+        #[serde(default)]
+        rewrite_prefix: Option<String>,
+        #[serde(default)]
+        health_check: Option<HealthCheckConfig>,
     },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum UpstreamConfig {
+    Url(String),
+    Detailed {
+        url: String,
+        #[serde(default = "default_weight")]
+        weight: u32,
+    },
+}
+
+impl UpstreamConfig {
+    pub fn url(&self) -> &str {
+        match self {
+            Self::Url(url) | Self::Detailed { url, .. } => url,
+        }
+    }
+    pub fn weight(&self) -> u32 {
+        match self {
+            Self::Url(_) => 1,
+            Self::Detailed { weight, .. } => *weight,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadBalancing {
+    #[default]
+    RoundRobin,
+    WeightedRoundRobin,
+    LeastConnections,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct HealthCheckConfig {
+    #[serde(default = "default_health_path")]
+    pub path: String,
+    #[serde(default = "default_health_interval_secs")]
+    pub interval_secs: u64,
+    #[serde(default = "default_health_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+pub fn proxy_upstreams<'a>(
+    upstream: Option<&'a str>,
+    upstreams: &'a [UpstreamConfig],
+) -> Vec<(&'a str, u32)> {
+    upstream
+        .into_iter()
+        .map(|url| (url, 1))
+        .chain(
+            upstreams
+                .iter()
+                .map(|upstream| (upstream.url(), upstream.weight())),
+        )
+        .collect()
 }
 
 fn default_bind() -> SocketAddr {
@@ -174,6 +251,24 @@ fn default_index_file() -> String {
 }
 fn default_lego_command() -> PathBuf {
     PathBuf::from("lego")
+}
+fn default_weight() -> u32 {
+    1
+}
+fn default_retries() -> u32 {
+    1
+}
+fn default_retry_backoff_ms() -> u64 {
+    100
+}
+fn default_health_path() -> String {
+    "/health".into()
+}
+fn default_health_interval_secs() -> u64 {
+    10
+}
+fn default_health_timeout_secs() -> u64 {
+    3
 }
 
 impl Config {
@@ -471,14 +566,54 @@ impl Config {
                     )));
                 }
             }
-            RouteTarget::Proxy { upstream } => {
-                let uri: Uri = upstream
-                    .parse()
-                    .map_err(|_| Error::Config(format!("invalid upstream URI: {upstream}")))?;
-                if uri.scheme().is_none() || uri.authority().is_none() {
-                    return Err(Error::Config(format!(
-                        "upstream must include scheme and host: {upstream}"
-                    )));
+            RouteTarget::Proxy {
+                upstream,
+                upstreams,
+                base_path,
+                rewrite_prefix,
+                health_check,
+                ..
+            } => {
+                let targets = proxy_upstreams(upstream.as_deref(), upstreams);
+                if targets.is_empty() {
+                    return Err(Error::Config(
+                        "proxy route needs at least one upstream".into(),
+                    ));
+                }
+                let mut unique = HashSet::new();
+                for (target, weight) in targets {
+                    if weight == 0 {
+                        return Err(Error::Config(format!(
+                            "upstream weight must be greater than zero: {target}"
+                        )));
+                    }
+                    let uri: Uri = target
+                        .parse()
+                        .map_err(|_| Error::Config(format!("invalid upstream URI: {target}")))?;
+                    if uri.scheme().is_none() || uri.authority().is_none() {
+                        return Err(Error::Config(format!(
+                            "upstream must include scheme and host: {target}"
+                        )));
+                    }
+                    if !unique.insert(target) {
+                        return Err(Error::Config(format!("duplicate upstream: {target}")));
+                    }
+                }
+                for (name, path) in [("base_path", base_path), ("rewrite_prefix", rewrite_prefix)] {
+                    if path.as_deref().is_some_and(|path| !path.starts_with('/')) {
+                        return Err(Error::Config(format!("proxy {name} must start with '/'")));
+                    }
+                }
+                if let Some(check) = health_check {
+                    if !check.path.starts_with('/')
+                        || check.interval_secs == 0
+                        || check.timeout_secs == 0
+                    {
+                        return Err(Error::Config(
+                            "health_check needs an absolute path and non-zero interval/timeout"
+                                .into(),
+                        ));
+                    }
                 }
             }
         }
@@ -597,9 +732,21 @@ fn route_table(route: &RouteConfig) -> Table {
             table["root"] = value(root.to_string_lossy().to_string());
             table["index_file"] = value(index_file);
         }
-        RouteTarget::Proxy { upstream } => {
+        RouteTarget::Proxy {
+            upstream,
+            upstreams,
+            ..
+        } => {
             table["kind"] = value("proxy");
-            table["upstream"] = value(upstream);
+            if upstreams.is_empty() {
+                table["upstream"] = value(upstream.as_deref().unwrap_or_default());
+            } else {
+                let mut values = toml_edit::Array::new();
+                for upstream in upstreams {
+                    values.push(upstream.url());
+                }
+                table["upstreams"] = value(values);
+            }
         }
     }
     table
@@ -712,7 +859,15 @@ mod tests {
                 RouteConfig {
                     path_prefix: "/api".into(),
                     target: RouteTarget::Proxy {
-                        upstream: "http://127.0.0.1:4000".into(),
+                        upstream: Some("http://127.0.0.1:4000".into()),
+                        upstreams: Vec::new(),
+                        load_balancing: LoadBalancing::RoundRobin,
+                        retries: default_retries(),
+                        retry_backoff_ms: default_retry_backoff_ms(),
+                        max_connections_per_upstream: 0,
+                        base_path: None,
+                        rewrite_prefix: None,
+                        health_check: None,
                     },
                 },
             )

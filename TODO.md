@@ -30,13 +30,13 @@ Dieses Dokument ist der Arbeitsplan für den Server. Die erste HTTP/1.1-Version 
 
 ## v0.3 — Erweiterter Proxy
 
-- [ ] Mehrere Upstreams je Route
-- [ ] Round Robin, gewichtetes Round Robin und Least Connections
-- [ ] Passive und aktive Health Checks
-- [ ] Retry-Regeln, Backoff und Circuit Breaking
-- [ ] WebSocket-Upgrade und bidirektionales Streaming
-- [ ] Upstream-Basis-Pfade und Rewrite-Regeln
-- [ ] Verbindungslimits pro Upstream
+- [x] Mehrere Upstreams je Route
+- [x] Round Robin, gewichtetes Round Robin und Least Connections
+- [x] Passive und aktive Health Checks
+- [x] Retry-Regeln, Backoff und Circuit Breaking
+- [x] WebSocket-Upgrade und bidirektionales Streaming
+- [x] Upstream-Basis-Pfade und Rewrite-Regeln
+- [x] Verbindungslimits pro Upstream
 
 ## v0.4 — HTTP-Features und Static Serving
 

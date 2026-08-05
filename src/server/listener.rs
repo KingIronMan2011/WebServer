@@ -17,7 +17,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{config::Config, error::Result, server::connection, tls::TlsManager};
+use crate::{config::Config, error::Result, server::connection, tls::TlsManager, upstream};
 
 pub async fn run(config: Config) -> Result<()> {
     let listener = TcpListener::bind(config.server.bind).await?;
@@ -27,6 +27,10 @@ pub async fn run(config: Config) -> Result<()> {
     let tls = start_tls(&config).await?;
     let state = Arc::new(RwLock::new(config));
     let shutdown = CancellationToken::new();
+    {
+        let config = state.read().await;
+        upstream::health::spawn(&config, shutdown.clone());
+    }
     let connections = Arc::new(ConnectionTracker::default());
     tracing::info!(address = %listener.local_addr()?, "listening for HTTP connections");
     let tls_listener = spawn_tls_listener(

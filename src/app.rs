@@ -65,7 +65,17 @@ pub async fn run(cli: Cli) -> Result<()> {
                         index_file: "index.html".into(),
                     }
                 }
-                (None, Some(upstream)) => RouteTarget::Proxy { upstream },
+                (None, Some(upstream)) => RouteTarget::Proxy {
+                    upstream: Some(upstream),
+                    upstreams: Vec::new(),
+                    load_balancing: crate::config::LoadBalancing::RoundRobin,
+                    retries: 1,
+                    retry_backoff_ms: 100,
+                    max_connections_per_upstream: 0,
+                    base_path: None,
+                    rewrite_prefix: None,
+                    health_check: None,
+                },
                 _ => {
                     return Err(crate::error::Error::Config(
                         "choose exactly one of --static or --upstream".into(),
