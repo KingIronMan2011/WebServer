@@ -42,7 +42,7 @@ rustls-acme = { version = "0.15", features = ["tokio"] }
 socket2 = { version = "0.5", features = ["all"] }
 tokio-rustls = "0.26"
 toml = "0.8"
-toml_edit = "0.22"
+toml_edit = "0.25"
 tracing = "0.1"
 tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
