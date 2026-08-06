@@ -11,6 +11,8 @@ $contentRoot = "C:\inetpub\wwwroot\Webserver"
 $certificateRoot = Join-Path $configRoot "certificates"
 $acmeCertificateRoot = Join-Path $certificateRoot "acme"
 $localCertificateRoot = Join-Path $certificateRoot "local"
+$dataRoot = Join-Path $configRoot "data"
+$sitesRoot = Join-Path $configRoot "sites"
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -21,7 +23,7 @@ if (-not (Test-Path -LiteralPath $BinaryPath -PathType Leaf)) {
     throw "Executable not found: $BinaryPath"
 }
 
-New-Item -ItemType Directory -Force -Path $installRoot, $configRoot, (Join-Path $configRoot "sites"), $certificateRoot, $acmeCertificateRoot, $localCertificateRoot, $contentRoot, (Join-Path $contentRoot "public") | Out-Null
+New-Item -ItemType Directory -Force -Path $installRoot, $configRoot, $sitesRoot, $dataRoot, $certificateRoot, $acmeCertificateRoot, $localCertificateRoot, $contentRoot, (Join-Path $contentRoot "public") | Out-Null
 Copy-Item -LiteralPath $BinaryPath -Destination (Join-Path $installRoot "webserver.exe") -Force
 
 if (-not (Test-Path -LiteralPath (Join-Path $configRoot "webserver.toml"))) {
@@ -35,7 +37,11 @@ if (-not (Test-Path -LiteralPath (Join-Path $contentRoot "public\index.html"))) 
 }
 
 $localService = "NT AUTHORITY\LOCAL SERVICE"
-& icacls $configRoot /grant "${localService}:(OI)(CI)RX" /T /C | Out-Null
+# ProgramData commonly inherits read access for local Users. Remove that
+# inheritance before storing session hashes, ACME account data, or private keys.
+& icacls $configRoot /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" "${localService}:(OI)(CI)RX" /T /C | Out-Null
+& icacls $sitesRoot /grant "${localService}:(OI)(CI)M" /T /C | Out-Null
+& icacls $dataRoot /grant "${localService}:(OI)(CI)M" /T /C | Out-Null
 & icacls $acmeCertificateRoot /grant "${localService}:(OI)(CI)M" /T /C | Out-Null
 & icacls $localCertificateRoot /grant "${localService}:(OI)(CI)RX" /T /C | Out-Null
 & icacls $contentRoot /grant "${localService}:(OI)(CI)RX" /T /C | Out-Null

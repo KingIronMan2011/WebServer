@@ -4,16 +4,17 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use std::time::Duration;
 
 #[cfg(unix)]
-use std::{process::Command, time::Duration};
+use std::process::Command;
 
 #[cfg(unix)]
 use std::path::PathBuf;
 
 use hyper::service::service_fn;
 use hyper_util::{
-    rt::{TokioExecutor, TokioIo},
+    rt::{TokioExecutor, TokioIo, TokioTimer},
     server::conn::auto,
 };
 use tokio::net::TcpListener;
@@ -54,7 +55,13 @@ pub async fn run(config: Config) -> Result<()> {
         (true, None) => return Err(crate::error::Error::Config("admin API requires TLS".into())),
         (false, _) => None,
     };
-    let quic_listener = spawn_quic_listener(&state, tls.clone(), shutdown.clone()).await?;
+    let quic_listener = spawn_quic_listener(
+        &state,
+        tls.clone(),
+        shutdown.clone(),
+        Arc::clone(&connections),
+    )
+    .await?;
 
     #[cfg(unix)]
     let result = run_unix(
@@ -105,7 +112,13 @@ pub async fn run_service(
         Arc::clone(&connections),
     )
     .await?;
-    let quic_listener = spawn_quic_listener(&state, tls.clone(), shutdown_token.clone()).await?;
+    let quic_listener = spawn_quic_listener(
+        &state,
+        tls.clone(),
+        shutdown_token.clone(),
+        Arc::clone(&connections),
+    )
+    .await?;
 
     let result = loop {
         tokio::select! {
@@ -215,7 +228,14 @@ async fn accept_one(
             connection::handle(request, peer, Arc::clone(&state), tls.clone(), false)
         });
         let mut builder = auto::Builder::new(TokioExecutor::new());
-        builder.http1().max_buf_size(max_header_bytes);
+        builder
+            .http1()
+            .max_buf_size(max_header_bytes)
+            .header_read_timeout(Duration::from_secs(10))
+            .timer(TokioTimer::new());
+        builder
+            .http2()
+            .max_header_list_size(u32::try_from(max_header_bytes).unwrap_or(u32::MAX));
         if let Err(error) = builder
             .serve_connection_with_upgrades(TokioIo::new(stream), service)
             .await
@@ -269,18 +289,32 @@ async fn spawn_tls_listener(
                     tracing::warn!(%peer, limit, "connection limit reached");
                     return;
                 };
-                let stream = match acceptor.accept(stream).await {
-                    Ok(stream) => stream,
-                    Err(error) => {
-                        tracing::debug!(%peer, %error, "TLS handshake failed");
-                        return;
-                    }
-                };
+                let stream =
+                    match tokio::time::timeout(Duration::from_secs(10), acceptor.accept(stream))
+                        .await
+                    {
+                        Ok(Ok(stream)) => stream,
+                        Err(_) => {
+                            tracing::debug!(%peer, "TLS handshake timed out");
+                            return;
+                        }
+                        Ok(Err(error)) => {
+                            tracing::debug!(%peer, %error, "TLS handshake failed");
+                            return;
+                        }
+                    };
                 let service = service_fn(move |request| {
                     connection::handle(request, peer, Arc::clone(&state), None, true)
                 });
                 let mut builder = auto::Builder::new(TokioExecutor::new());
-                builder.http1().max_buf_size(max_header_bytes);
+                builder
+                    .http1()
+                    .max_buf_size(max_header_bytes)
+                    .header_read_timeout(Duration::from_secs(10))
+                    .timer(TokioTimer::new());
+                builder
+                    .http2()
+                    .max_header_list_size(u32::try_from(max_header_bytes).unwrap_or(u32::MAX));
                 if let Err(error) = builder
                     .serve_connection_with_upgrades(TokioIo::new(stream), service)
                     .await
@@ -351,6 +385,7 @@ async fn spawn_quic_listener(
     state: &Arc<RwLock<Config>>,
     tls: Option<Arc<TlsManager>>,
     shutdown: CancellationToken,
+    connections: Arc<ConnectionTracker>,
 ) -> Result<Option<JoinHandle<()>>> {
     let Some(tls) = tls else {
         return Ok(None);
@@ -361,19 +396,19 @@ async fn spawn_quic_listener(
     }
     let bind = config.tls.quic_bind.unwrap_or(config.tls.bind);
     drop(config);
-    crate::server::quic::spawn(bind, tls, Arc::clone(state), shutdown)
+    crate::server::quic::spawn(bind, tls, Arc::clone(state), shutdown, connections)
         .map(Some)
         .map_err(crate::error::Error::Config)
 }
 
 #[derive(Default)]
-struct ConnectionTracker {
+pub(crate) struct ConnectionTracker {
     active: AtomicUsize,
     idle: Notify,
 }
 
 impl ConnectionTracker {
-    fn try_track(self: &Arc<Self>, limit: usize) -> Option<ConnectionGuard> {
+    pub(crate) fn try_track(self: &Arc<Self>, limit: usize) -> Option<ConnectionGuard> {
         loop {
             let active = self.active.load(Ordering::Acquire);
             if limit != 0 && active >= limit {
@@ -400,7 +435,7 @@ impl ConnectionTracker {
     }
 }
 
-struct ConnectionGuard(Arc<ConnectionTracker>);
+pub(crate) struct ConnectionGuard(Arc<ConnectionTracker>);
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {

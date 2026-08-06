@@ -121,3 +121,30 @@ port = 0
         .expect_err("invalid configuration is rejected");
     assert!(error.to_string().contains("CORS"));
 }
+
+#[test]
+fn rejects_an_admin_host_that_is_also_a_public_site() {
+    let directory = TempDirectory::new();
+    let config = write_site(
+        &directory,
+        r#"
+host = "example.test"
+
+[[routes]]
+path_prefix = "/"
+kind = "proxy"
+upstream = "http://127.0.0.1:3000"
+"#,
+    );
+    fs::write(
+        &config,
+        "[server]\nbind = \"127.0.0.1:0\"\n\n[tls]\nenabled = true\nemail = \"admin@example.test\"\n\n[admin]\nenabled = true\nhost = \"example.test\"\n",
+    )
+    .expect("write overlapping admin host");
+
+    let config = Config::load(&config).expect("load configuration");
+    let error = config
+        .validate()
+        .expect_err("admin host must be isolated from public sites");
+    assert!(error.to_string().contains("must not also be configured"));
+}

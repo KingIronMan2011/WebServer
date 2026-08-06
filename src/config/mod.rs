@@ -461,6 +461,16 @@ impl Config {
         if !is_safe_host_name(&host) {
             return Err(Error::Config("admin host must be a valid hostname".into()));
         }
+        let current = Self::load(&source_path)?;
+        if current
+            .sites
+            .iter()
+            .any(|site| normalise_host(&site.host) == host)
+        {
+            return Err(Error::Config(
+                "admin host must not also be configured as a public site".into(),
+            ));
+        }
         if !email.contains('@') {
             return Err(Error::Config(
                 "a valid ACME email address is required".into(),
@@ -671,8 +681,15 @@ impl Config {
             let host = self.admin.host.as_deref().ok_or_else(|| {
                 Error::Config("admin.host is required when the admin API is enabled".into())
             })?;
-            if !is_safe_host_name(&normalise_host(host)) {
+            let host = normalise_host(host);
+            if !is_safe_host_name(&host) {
                 return Err(Error::Config("admin.host must be a valid hostname".into()));
+            }
+            if hosts.contains(&host) {
+                return Err(Error::Config(
+                    "admin.host must not also be configured as a public site; admin cookies are host-scoped"
+                        .into(),
+                ));
             }
             if !self.tls.enabled {
                 return Err(Error::Config(
@@ -1148,9 +1165,24 @@ fn replace_file_atomically(temporary: &Path, path: &Path) -> std::io::Result<()>
     Ok(())
 }
 
-fn is_safe_host_name(host: &str) -> bool {
-    host.bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+pub(crate) fn is_safe_host_name(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
 }
 
 pub fn normalise_host(host: &str) -> String {

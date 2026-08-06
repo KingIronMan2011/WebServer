@@ -1,0 +1,14 @@
+title = "Webserver secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Known fixed password used only by the admin authentication regression test"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['''^0123456789abcdef$''']
+
+[[allowlists]]
+description = "Generated dependency and build output"
+paths = ['''(^|[\\/])(target|node_modules|dist)([\\/]|$)''']

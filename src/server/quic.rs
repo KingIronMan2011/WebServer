@@ -13,11 +13,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{config::Config, server::connection, tls::TlsManager};
 
-pub fn spawn(
+pub(crate) fn spawn(
     bind: std::net::SocketAddr,
     tls: Arc<TlsManager>,
     state: Arc<RwLock<Config>>,
     shutdown: CancellationToken,
+    connections: Arc<crate::server::listener::ConnectionTracker>,
 ) -> std::result::Result<JoinHandle<()>, String> {
     let mut rustls = (*tls.server_config()).clone();
     // HTTP/3 uses its own ALPN value and must not advertise TCP protocols.
@@ -50,16 +51,34 @@ pub fn spawn(
             };
             let Some(incoming) = incoming else { return };
             let state = Arc::clone(&state);
+            let connections = Arc::clone(&connections);
             tokio::spawn(async move {
-                let connection = match incoming.await {
-                    Ok(connection) => connection,
-                    Err(error) => {
+                let limit = state.read().await.server.max_connections;
+                let Some(_connection_guard) = connections.try_track(limit) else {
+                    tracing::debug!(limit, "QUIC connection limit reached");
+                    return;
+                };
+                let connection = match tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    incoming,
+                )
+                .await
+                {
+                    Ok(Ok(connection)) => connection,
+                    Err(_) => {
+                        tracing::debug!("QUIC handshake timed out");
+                        return;
+                    }
+                    Ok(Err(error)) => {
                         tracing::debug!(%error, "QUIC handshake failed");
                         return;
                     }
                 };
                 let peer = connection.remote_address();
-                let mut h3 = match h3::server::builder()
+                let max_header_bytes = state.read().await.server.max_header_bytes as u64;
+                let mut h3_builder = h3::server::builder();
+                h3_builder.max_field_section_size(max_header_bytes);
+                let mut h3 = match h3_builder
                     .build(h3_quinn::Connection::new(connection))
                     .await
                 {
@@ -87,14 +106,48 @@ pub fn spawn(
                                 return;
                             }
                         };
+                        let max_body_bytes = state.read().await.server.max_body_bytes;
+                        let max_body_bytes = usize::try_from(max_body_bytes).unwrap_or(usize::MAX);
                         let mut body = BytesMut::new();
                         loop {
-                            match stream.recv_data().await {
-                                Ok(Some(mut chunk)) => {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(30),
+                                stream.recv_data(),
+                            )
+                            .await
+                            {
+                                Err(_) => {
+                                    tracing::debug!(%peer, "HTTP/3 request body timed out");
+                                    return;
+                                }
+                                Ok(Ok(Some(mut chunk))) => {
+                                    if chunk.remaining() > max_body_bytes.saturating_sub(body.len())
+                                    {
+                                        let response = crate::http::response::error(
+                                            hyper::StatusCode::PAYLOAD_TOO_LARGE,
+                                        );
+                                        let (parts, mut response_body) = response.into_parts();
+                                        if stream
+                                            .send_response(hyper::Response::from_parts(parts, ()))
+                                            .await
+                                            .is_err()
+                                        {
+                                            return;
+                                        }
+                                        while let Some(frame) = response_body.frame().await {
+                                            if let Ok(frame) = frame
+                                                && let Ok(data) = frame.into_data()
+                                            {
+                                                let _ = stream.send_data(data).await;
+                                            }
+                                        }
+                                        let _ = stream.finish().await;
+                                        return;
+                                    }
                                     body.extend_from_slice(&chunk.copy_to_bytes(chunk.remaining()))
                                 }
-                                Ok(None) => break,
-                                Err(error) => {
+                                Ok(Ok(None)) => break,
+                                Ok(Err(error)) => {
                                     tracing::debug!(%error, "HTTP/3 request body failed");
                                     return;
                                 }

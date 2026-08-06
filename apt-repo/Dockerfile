@@ -1,4 +1,4 @@
-FROM debian:bookworm AS source
+FROM debian:bookworm@sha256:813017f3d62be4b5891a7acca6a01bdcd4b8513daa81b1ab99d3a50385b26931 AS source
 
 ARG SOURCE_REPOSITORY=https://github.com/KingIronMan2011/WebServer.git
 ARG SOURCE_REF=main
@@ -15,15 +15,17 @@ RUN --mount=type=secret,id=github_token,required=false \
       git clone --depth 1 --branch "$SOURCE_REF" "$SOURCE_REPOSITORY" .; \
     fi
 
-FROM node:bookworm AS dashboard
+FROM node:26-bookworm@sha256:93f972701f557d320918895e41eeda4821e4beb495f45f53282a22ca4c3f0813 AS dashboard
 
 COPY --from=source /src/dashboard /dashboard
 WORKDIR /dashboard
-RUN npm install --global pnpm@11.20.0 \
+RUN npm install --global npm@12.0.2 pnpm@11.20.0 \
+    && npm cache clean --force \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
     && pnpm install --frozen-lockfile \
     && pnpm build
 
-FROM rust:bookworm AS build
+FROM rust:bookworm@sha256:14bc9c5966e7b3a385794b3d5389a8765668342025fbcc7b2e3d2866ac4bd8c3 AS build
 
 COPY --from=source /src /src
 COPY debian/postinst /tmp/postinst
@@ -46,7 +48,7 @@ RUN set -eux; \
     cp -a /dashboard/dist/. /package/usr/share/webserver/dashboard/; \
     dpkg-deb --build --root-owner-group /package "/webserver_${version}_amd64.deb"
 
-FROM debian:bookworm AS repository
+FROM debian:bookworm@sha256:813017f3d62be4b5891a7acca6a01bdcd4b8513daa81b1ab99d3a50385b26931 AS repository
 
 ARG APT_GPG_FINGERPRINT
 
@@ -69,7 +71,7 @@ RUN --mount=type=secret,id=apt_gpg_private_key_b64,required=true \
     gpg --batch --export "$fingerprint" > /repo/webserver-archive-keyring.gpg; \
     rm -rf "$GNUPGHOME" /tmp/webserver_*_amd64.deb
 
-FROM nginx:alpine
+FROM nginx:alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752
 ENV TZ=Europe/Berlin
 RUN apk add --no-cache tzdata
 COPY --from=repository /repo/dists /usr/share/nginx/html/dists

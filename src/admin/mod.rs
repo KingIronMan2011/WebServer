@@ -18,14 +18,20 @@ use argon2::{
 };
 use axum::{
     Json, Router,
+    extract::DefaultBodyLimit,
     extract::{ConnectInfo, Path as AxumPath, Query, State},
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
+    middleware::{self, Next},
     response::IntoResponse,
     routing::{delete, get, post},
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::{Deserialize, Serialize};
-use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
+use sqlx_core::{
+    pool::{Pool, PoolOptions},
+    row::Row,
+};
+use sqlx_sqlite::{Sqlite, SqliteConnectOptions, SqliteJournalMode};
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -34,25 +40,58 @@ use crate::{
     config::{Config, RouteConfig, RouteTarget},
     error::{Error, Result},
 };
+
+// The `sqlx` facade locks optional MySQL code (and its unpatched RSA crate)
+// even for SQLite-only builds. Import only the two driver crates we execute.
+mod sqlx {
+    pub use sqlx_core::{Error, query::query, query_scalar::query_scalar};
+}
+
+type SqlitePool = Pool<Sqlite>;
+type SqlitePoolOptions = PoolOptions<Sqlite>;
 use tower::Service;
 use tower_http::set_header::SetResponseHeaderLayer;
 
-const SESSION_COOKIE: &str = "__Host-webserver_admin";
+pub(crate) const SESSION_COOKIE: &str = "__Host-webserver_admin";
 const SETUP_GRANT_LIFETIME: Duration = Duration::from_secs(15 * 60);
 const SESSION_LIFETIME: Duration = Duration::from_secs(8 * 60 * 60);
 const API_VERSION: u32 = 1;
+const ADMIN_MAX_BODY_BYTES: usize = 64 * 1024;
+const ADMIN_MAX_CONNECTIONS: usize = 256;
+const MAX_AUTH_ATTEMPT_BUCKETS: usize = 16 * 1024;
+const MAX_USERNAME_BYTES: usize = 128;
+const MAX_PASSWORD_BYTES: usize = 1024;
+const MAX_SETUP_CODE_BYTES: usize = 256;
+const PASSWORD_WORKERS: usize = 4;
+const MAX_SESSIONS_PER_USER: i64 = 16;
+const MAX_AUDIT_ENTRIES: i64 = 100_000;
 
 #[derive(Clone)]
 pub struct AdminState {
     config: Arc<RwLock<Config>>,
     database: SqlitePool,
-    attempts: Arc<Mutex<HashMap<IpAddr, AttemptBucket>>>,
+    attempts: Arc<Mutex<AttemptStore>>,
 }
 
 #[derive(Clone, Copy)]
 struct AttemptBucket {
     failures: u8,
     retry_after: Instant,
+    expires_at: Instant,
+}
+
+struct AttemptStore {
+    buckets: HashMap<IpAddr, AttemptBucket>,
+    last_pruned: Instant,
+}
+
+impl Default for AttemptStore {
+    fn default() -> Self {
+        Self {
+            buckets: HashMap::new(),
+            last_pruned: Instant::now(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -193,11 +232,16 @@ pub async fn spawn(
         ));
     }
     let database = open_database(&settings.database).await?;
+    // Build the dummy verifier before accepting traffic so an unknown account
+    // takes the same password-verification path without a first-request spike.
+    let _ = dummy_password_hash();
     let state = AdminState {
         config,
         database,
-        attempts: Arc::new(Mutex::new(HashMap::new())),
+        attempts: Arc::new(Mutex::new(AttemptStore::default())),
     };
+    let connection_slots = Arc::new(tokio::sync::Semaphore::new(ADMIN_MAX_CONNECTIONS));
+    let max_header_bytes = state.config.read().await.server.max_header_bytes;
     let listener = tokio::net::TcpListener::bind(settings.bind).await?;
     tracing::info!(address = %settings.bind, host = ?settings.host, "listening for HTTPS admin API");
     Ok(tokio::spawn(async move {
@@ -212,23 +256,48 @@ pub async fn spawn(
                     continue;
                 }
             };
+            let Ok(connection_slot) = Arc::clone(&connection_slots).try_acquire_owned() else {
+                tracing::warn!(%peer, "admin connection limit reached");
+                continue;
+            };
             let acceptor = tls.acceptor();
             let app = router(state.clone());
             tokio::spawn(async move {
-                let Ok(stream) = acceptor.accept(stream).await else {
-                    return;
-                };
+                let _connection_slot = connection_slot;
+                let stream =
+                    match tokio::time::timeout(Duration::from_secs(10), acceptor.accept(stream))
+                        .await
+                    {
+                        Ok(Ok(stream)) => stream,
+                        Ok(Err(error)) => {
+                            tracing::debug!(%peer, %error, "admin TLS handshake failed");
+                            return;
+                        }
+                        Err(_) => {
+                            tracing::debug!(%peer, "admin TLS handshake timed out");
+                            return;
+                        }
+                    };
                 let io = hyper_util::rt::TokioIo::new(stream);
                 let mut make_service = app.into_make_service_with_connect_info::<SocketAddr>();
                 let service = match make_service.call(peer).await {
                     Ok(service) => service,
                     Err(never) => match never {},
                 };
-                if let Err(error) = hyper_util::server::conn::auto::Builder::new(
+                let mut builder = hyper_util::server::conn::auto::Builder::new(
                     hyper_util::rt::TokioExecutor::new(),
-                )
-                .serve_connection(io, hyper_util::service::TowerToHyperService::new(service))
-                .await
+                );
+                builder
+                    .http1()
+                    .max_buf_size(max_header_bytes)
+                    .header_read_timeout(Duration::from_secs(10))
+                    .timer(hyper_util::rt::TokioTimer::new());
+                builder
+                    .http2()
+                    .max_header_list_size(u32::try_from(max_header_bytes).unwrap_or(u32::MAX));
+                if let Err(error) = builder
+                    .serve_connection(io, hyper_util::service::TowerToHyperService::new(service))
+                    .await
                 {
                     tracing::debug!(%peer, %error, "admin connection closed");
                 }
@@ -263,7 +332,64 @@ fn router(state: AdminState) -> Router {
             HeaderName::from_static("x-webserver-api-version"),
             HeaderValue::from_static("1"),
         ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("x-content-type-options"),
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("strict-transport-security"),
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        ))
+        .layer(DefaultBodyLimit::max(ADMIN_MAX_BODY_BYTES))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            enforce_admin_host,
+        ))
         .with_state(state)
+}
+
+async fn enforce_admin_host(
+    State(state): State<AdminState>,
+    request: axum::extract::Request,
+    next: Next,
+) -> axum::response::Response {
+    let expected = state
+        .config
+        .read()
+        .await
+        .admin
+        .host
+        .as_deref()
+        .map(crate::config::normalise_host);
+    let actual = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .and_then(crate::http::request::authority_host)
+        .map(|host| crate::config::normalise_host(&host))
+        .or_else(|| {
+            request
+                .uri()
+                .authority()
+                .and_then(|authority| crate::http::request::authority_host(authority.as_str()))
+                .map(|host| crate::config::normalise_host(&host))
+        });
+    if expected.is_none() || actual != expected {
+        return ApiError::response(
+            StatusCode::MISDIRECTED_REQUEST,
+            "invalid_host",
+            "request host does not match the admin host",
+        );
+    }
+    next.run(request).await
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -286,6 +412,22 @@ async fn login(
             "try again later",
         );
     }
+    if input.username.trim().is_empty()
+        || input.username.len() > MAX_USERNAME_BYTES
+        || input.password.is_empty()
+        || input.password.len() > MAX_PASSWORD_BYTES
+        || input
+            .setup_code
+            .as_ref()
+            .is_some_and(|code| code.len() > MAX_SETUP_CODE_BYTES)
+    {
+        fail_attempt(&state, peer.ip()).await;
+        return ApiError::response(
+            StatusCode::UNAUTHORIZED,
+            "invalid_credentials",
+            "login failed",
+        );
+    }
     let row = match sqlx::query(
         "SELECT id, password_hash, password_change_required, role FROM admin_users WHERE username = ?",
     )
@@ -303,6 +445,18 @@ async fn login(
             );
         }
     };
+    let verification_hash = row
+        .as_ref()
+        .map(|row| row.get::<String, _>("password_hash"))
+        .unwrap_or_else(|| dummy_password_hash().to_owned());
+    let Some(password_matches) = verify_password_bounded(input.password, verification_hash).await
+    else {
+        return ApiError::response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "try again later",
+        );
+    };
     let Some(row) = row else {
         fail_attempt(&state, peer.ip()).await;
         return ApiError::response(
@@ -311,8 +465,7 @@ async fn login(
             "login failed",
         );
     };
-    let password_hash: String = row.get("password_hash");
-    if !verify_password(&input.password, &password_hash) {
+    if !password_matches {
         fail_attempt(&state, peer.ip()).await;
         return ApiError::response(
             StatusCode::UNAUTHORIZED,
@@ -343,6 +496,10 @@ async fn login(
     clear_attempt(&state, peer.ip()).await;
     let token = Uuid::new_v4().to_string() + &Uuid::new_v4().to_string();
     let expires = unix_after(SESSION_LIFETIME);
+    let _ = sqlx::query("DELETE FROM admin_sessions WHERE expires_at < ?")
+        .bind(unix_after(Duration::ZERO))
+        .execute(&state.database)
+        .await;
     if let Err(error) =
         sqlx::query("INSERT INTO admin_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)")
             .bind(secret_hash(&token))
@@ -352,6 +509,21 @@ async fn login(
             .await
     {
         tracing::error!(%error, "could not create admin session");
+        return ApiError::response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "internal server error",
+        );
+    }
+    if let Err(error) = sqlx::query(
+        "DELETE FROM admin_sessions WHERE rowid IN (SELECT rowid FROM admin_sessions WHERE user_id = ? ORDER BY expires_at DESC, rowid DESC LIMIT -1 OFFSET ?)",
+    )
+    .bind(&user_id)
+    .bind(MAX_SESSIONS_PER_USER)
+    .execute(&state.database)
+    .await
+    {
+        tracing::error!(%error, "could not enforce the per-user session limit");
         return ApiError::response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal_error",
@@ -446,14 +618,25 @@ async fn create_user(
             "role must be admin, operator, or viewer",
         );
     };
-    if input.username.trim().is_empty() || input.username.len() > 128 || input.password.len() < 16 {
+    if input.username.trim().is_empty()
+        || input.username.len() > MAX_USERNAME_BYTES
+        || input.password.len() < 16
+        || input.password.len() > MAX_PASSWORD_BYTES
+    {
         return ApiError::response(
             StatusCode::BAD_REQUEST,
             "invalid_user",
             "username or password is invalid",
         );
     }
-    let hash = match hash_password(&input.password) {
+    let Some(hash) = hash_password_bounded(input.password).await else {
+        return ApiError::response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "try again later",
+        );
+    };
+    let hash = match hash {
         Ok(hash) => hash,
         Err(_) => {
             return ApiError::response(
@@ -517,9 +700,12 @@ async fn update_user_role(
             "username is invalid",
         );
     }
-    match sqlx::query("UPDATE admin_users SET role = ? WHERE username = ?")
+    match sqlx::query(
+        "UPDATE admin_users SET role = ? WHERE username = ? AND (? = 'admin' OR role != 'admin' OR (SELECT COUNT(*) FROM admin_users WHERE role = 'admin') > 1)",
+    )
         .bind(role.as_str())
         .bind(&username)
+        .bind(role.as_str())
         .execute(&state.database)
         .await
     {
@@ -535,11 +721,29 @@ async fn update_user_role(
             .await;
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(_) => ApiError::response(
-            StatusCode::NOT_FOUND,
-            "user_not_found",
-            "user does not exist",
-        ),
+        Ok(_) => {
+            let exists = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM admin_users WHERE username = ?",
+            )
+            .bind(&username)
+            .fetch_one(&state.database)
+            .await
+            .unwrap_or_default()
+                != 0;
+            if exists {
+                ApiError::response(
+                    StatusCode::CONFLICT,
+                    "last_admin",
+                    "the final admin account cannot be demoted",
+                )
+            } else {
+                ApiError::response(
+                    StatusCode::NOT_FOUND,
+                    "user_not_found",
+                    "user does not exist",
+                )
+            }
+        }
         Err(error) => {
             tracing::error!(%error, "could not update user role");
             ApiError::response(
@@ -562,19 +766,21 @@ async fn logout(
             .execute(&state.database)
             .await;
     }
-    let cookie = Cookie::build((SESSION_COOKIE, ""))
-        .path("/")
-        .max_age(time::Duration::seconds(0));
-    (jar.remove(cookie), StatusCode::NO_CONTENT).into_response()
+    (jar.remove(expired_session_cookie()), StatusCode::NO_CONTENT).into_response()
 }
 
 async fn change_password(
     State(state): State<AdminState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     jar: CookieJar,
     headers: HeaderMap,
     Json(input): Json<PasswordChangeRequest>,
 ) -> axum::response::Response {
-    if input.new_password.len() < 16 || input.new_password.len() > 1024 {
+    if input.current_password.is_empty()
+        || input.current_password.len() > MAX_PASSWORD_BYTES
+        || input.new_password.len() < 16
+        || input.new_password.len() > MAX_PASSWORD_BYTES
+    {
         return ApiError::response(
             StatusCode::BAD_REQUEST,
             "weak_password",
@@ -603,14 +809,29 @@ async fn change_password(
         }
     };
     let current: String = row.get("password_hash");
-    if !verify_password(&input.current_password, &current) {
+    let Some(password_matches) = verify_password_bounded(input.current_password, current).await
+    else {
+        return ApiError::response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "try again later",
+        );
+    };
+    if !password_matches {
         return ApiError::response(
             StatusCode::UNAUTHORIZED,
             "invalid_credentials",
             "login failed",
         );
     }
-    let hash = match hash_password(&input.new_password) {
+    let Some(hash) = hash_password_bounded(input.new_password).await else {
+        return ApiError::response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "try again later",
+        );
+    };
+    let hash = match hash {
         Ok(hash) => hash,
         Err(_) => {
             return ApiError::response(
@@ -635,16 +856,30 @@ async fn change_password(
             "internal server error",
         );
     }
+    // A password rotation is a credential-recovery boundary. Revoke every
+    // outstanding bearer/cookie session so a stolen token cannot survive it.
+    if let Err(error) = sqlx::query("DELETE FROM admin_sessions WHERE user_id = ?")
+        .bind(&user_id)
+        .execute(&state.database)
+        .await
+    {
+        tracing::error!(%error, "session revocation after password update failed");
+        return ApiError::response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "internal server error",
+        );
+    }
     audit(
         &state.database,
         Some(&user_id),
-        "0.0.0.0".parse().unwrap(),
+        peer.ip(),
         "auth.password_changed",
         "user",
         true,
     )
     .await;
-    StatusCode::NO_CONTENT.into_response()
+    (jar.remove(expired_session_cookie()), StatusCode::NO_CONTENT).into_response()
 }
 
 async fn list_sites(
@@ -987,11 +1222,13 @@ async fn observability(
     let endpoint = std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
         .ok()
         .or_else(|| std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok());
+    let tracing_enabled = endpoint.is_some();
+    let endpoint = endpoint.as_deref().and_then(public_endpoint);
     let config = state.config.read().await;
     Json(serde_json::json!({
         "tracing": {
-            "enabled": endpoint.is_some(),
-            "exporter": if endpoint.is_some() { "otlp" } else { "none" },
+            "enabled": tracing_enabled,
+            "exporter": if tracing_enabled { "otlp" } else { "none" },
             "endpoint": endpoint,
         },
         "prometheus": {
@@ -1000,6 +1237,16 @@ async fn observability(
         }
     }))
     .into_response()
+}
+
+fn public_endpoint(value: &str) -> Option<String> {
+    let uri: hyper::Uri = value.parse().ok()?;
+    let scheme = uri.scheme_str()?;
+    let authority = uri.authority()?.as_str();
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    Some(format!("{scheme}://{authority}"))
 }
 
 async fn openapi() -> Json<serde_json::Value> {
@@ -1089,17 +1336,14 @@ async fn open_database(path: &Path) -> Result<SqlitePool> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    let url = format!(
-        "sqlite://{}?mode=rwc",
-        path.to_string_lossy().replace('\\', "/")
-    );
+    restrict_database_file(path)?;
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Delete);
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
-        .connect(&url)
-        .await
-        .map_err(sql_error)?;
-    sqlx::query("PRAGMA journal_mode = WAL")
-        .execute(&pool)
+        .connect_with(options)
         .await
         .map_err(sql_error)?;
     sqlx::query("CREATE TABLE IF NOT EXISTS admin_schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)").execute(&pool).await.map_err(sql_error)?;
@@ -1128,6 +1372,28 @@ async fn open_database(path: &Path) -> Result<SqlitePool> {
     Ok(pool)
 }
 
+#[cfg(unix)]
+fn restrict_database_file(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+    {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn restrict_database_file(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 fn hash_password(password: &str) -> Result<String> {
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
@@ -1135,6 +1401,34 @@ fn hash_password(password: &str) -> Result<String> {
         .map(|hash| hash.to_string())
         .map_err(|error| Error::Config(format!("password hashing failed: {error}")))
 }
+
+fn password_hash_slots() -> &'static tokio::sync::Semaphore {
+    static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| tokio::sync::Semaphore::new(PASSWORD_WORKERS))
+}
+
+fn dummy_password_hash() -> &'static str {
+    static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HASH.get_or_init(|| {
+        hash_password("constant dummy password used only for timing equalisation")
+            .expect("the fixed dummy password can be hashed")
+    })
+}
+
+async fn verify_password_bounded(password: String, hash: String) -> Option<bool> {
+    let _slot = password_hash_slots().try_acquire().ok()?;
+    tokio::task::spawn_blocking(move || verify_password(&password, &hash))
+        .await
+        .ok()
+}
+
+async fn hash_password_bounded(password: String) -> Option<Result<String>> {
+    let _slot = password_hash_slots().try_acquire().ok()?;
+    tokio::task::spawn_blocking(move || hash_password(&password))
+        .await
+        .ok()
+}
+
 fn verify_password(password: &str, hash: &str) -> bool {
     PasswordHash::new(hash)
         .ok()
@@ -1187,6 +1481,16 @@ fn session_token<'a>(jar: &'a CookieJar, headers: &'a HeaderMap) -> Option<&'a s
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.strip_prefix("Bearer "))
         })
+}
+
+fn expired_session_cookie() -> Cookie<'static> {
+    Cookie::build((SESSION_COOKIE, String::new()))
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::Strict)
+        .path("/")
+        .max_age(time::Duration::seconds(0))
+        .build()
 }
 async fn authenticated_user(
     database: &SqlitePool,
@@ -1254,26 +1558,44 @@ async fn audit(
     target: &str,
     success: bool,
 ) {
-    let _ = sqlx::query("INSERT INTO admin_audit_log (created_at, user_id, source_ip, action, target, success) VALUES (?, ?, ?, ?, ?, ?)").bind(unix_after(Duration::ZERO)).bind(user_id).bind(source_ip.to_string()).bind(action).bind(target).bind(success as i64).execute(database).await;
+    if sqlx::query("INSERT INTO admin_audit_log (created_at, user_id, source_ip, action, target, success) VALUES (?, ?, ?, ?, ?, ?)").bind(unix_after(Duration::ZERO)).bind(user_id).bind(source_ip.to_string()).bind(action).bind(target).bind(success as i64).execute(database).await.is_ok() {
+        let _ = sqlx::query(
+            "DELETE FROM admin_audit_log WHERE id <= COALESCE((SELECT id FROM admin_audit_log ORDER BY id DESC LIMIT 1 OFFSET ?), -1)",
+        )
+        .bind(MAX_AUDIT_ENTRIES)
+        .execute(database)
+        .await;
+    }
 }
 async fn allow_attempt(state: &AdminState, ip: IpAddr) -> bool {
-    let attempts = state.attempts.lock().await;
+    let now = Instant::now();
+    let mut attempts = state.attempts.lock().await;
+    if now.duration_since(attempts.last_pruned) >= Duration::from_secs(60) {
+        attempts.buckets.retain(|_, bucket| now < bucket.expires_at);
+        attempts.last_pruned = now;
+    }
+    if attempts.buckets.len() >= MAX_AUTH_ATTEMPT_BUCKETS && !attempts.buckets.contains_key(&ip) {
+        return false;
+    }
     attempts
+        .buckets
         .get(&ip)
-        .is_none_or(|bucket| Instant::now() >= bucket.retry_after)
+        .is_none_or(|bucket| now >= bucket.retry_after)
 }
 async fn fail_attempt(state: &AdminState, ip: IpAddr) {
     let mut attempts = state.attempts.lock().await;
-    let bucket = attempts.entry(ip).or_insert(AttemptBucket {
+    let bucket = attempts.buckets.entry(ip).or_insert(AttemptBucket {
         failures: 0,
         retry_after: Instant::now(),
+        expires_at: Instant::now() + Duration::from_secs(15 * 60),
     });
     bucket.failures = bucket.failures.saturating_add(1);
     let delay = Duration::from_secs(2u64.saturating_pow(bucket.failures.min(8) as u32));
     bucket.retry_after = Instant::now() + delay;
+    bucket.expires_at = Instant::now() + Duration::from_secs(15 * 60);
 }
 async fn clear_attempt(state: &AdminState, ip: IpAddr) {
-    state.attempts.lock().await.remove(&ip);
+    state.attempts.lock().await.buckets.remove(&ip);
 }
 
 #[cfg(test)]
@@ -1298,7 +1620,7 @@ mod tests {
             .expect("create public directory");
         tokio::fs::write(
             directory.join("webserver.toml"),
-            "[server]\nbind = \"127.0.0.1:8080\"\n",
+            "[server]\nbind = \"127.0.0.1:8080\"\n\n[admin]\nhost = \"admin.test\"\n",
         )
         .await
         .expect("write config");
@@ -1316,7 +1638,7 @@ mod tests {
         let state = AdminState {
             config: Arc::new(RwLock::new(config)),
             database: open_database(&database_path).await.expect("open database"),
-            attempts: Arc::new(Mutex::new(HashMap::new())),
+            attempts: Arc::new(Mutex::new(AttemptStore::default())),
         };
         let app = router(state.clone()).layer(Extension(ConnectInfo(
             "127.0.0.1:12345".parse::<SocketAddr>().expect("test peer"),
@@ -1328,6 +1650,7 @@ mod tests {
                 axum::http::Request::builder()
                     .method("POST")
                     .uri("/api/v1/auth/login")
+                    .header("host", "admin.test")
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"username":"admin","password":"0123456789abcdef"}"#,
@@ -1339,7 +1662,7 @@ mod tests {
         assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
 
         let accepted = router(state.clone()).layer(Extension(ConnectInfo("127.0.0.2:12345".parse::<SocketAddr>().expect("test peer")))).oneshot(
-            axum::http::Request::builder().method("POST").uri("/api/v1/auth/login").header("content-type", "application/json")
+            axum::http::Request::builder().method("POST").uri("/api/v1/auth/login").header("host", "admin.test").header("content-type", "application/json")
                 .body(Body::from(r#"{"username":"admin","password":"0123456789abcdef","setup_code":"one-time-setup-code"}"#)).expect("build request")
         ).await.expect("serve accepted login");
         assert_eq!(accepted.status(), StatusCode::OK);
@@ -1373,6 +1696,7 @@ mod tests {
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/api/v1/sites/localhost/routes")
+                    .header("host", "admin.test")
                     .header("cookie", session_cookie)
                     .body(Body::empty())
                     .expect("build route request"),

@@ -89,7 +89,7 @@ fn docker_cache() -> &'static Mutex<HashMap<String, CachedDocker>> {
 
 #[cfg(unix)]
 async fn docker_query(config: &DockerDiscoveryConfig) -> Vec<String> {
-    use http_body_util::{BodyExt, Empty};
+    use http_body_util::{BodyExt, Empty, Limited};
     use hyper::{Request, body::Bytes, client::conn::http1};
     use hyper_util::rt::TokioIo;
 
@@ -127,7 +127,11 @@ async fn docker_query(config: &DockerDiscoveryConfig) -> Vec<String> {
             return Vec::new();
         }
     };
-    let payload = match response.into_body().collect().await {
+    const MAX_DOCKER_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+    let payload = match Limited::new(response.into_body(), MAX_DOCKER_RESPONSE_BYTES)
+        .collect()
+        .await
+    {
         Ok(payload) => payload.to_bytes(),
         Err(error) => {
             tracing::warn!(%error, "Docker discovery response body failed");

@@ -84,7 +84,7 @@ fn applies_cors_preflight_before_serving_the_route_and_rate_limits_clients() {
     let config = directory.0.join("webserver.toml");
     fs::write(
         &config,
-        format!("[server]\nbind = \"127.0.0.1:{port}\"\nrate_limit_per_minute = 1\n"),
+        format!("[server]\nbind = \"127.0.0.1:{port}\"\nrate_limit_per_minute = 1\nmetrics_path = \"/metrics\"\n"),
     )
     .expect("write global configuration");
     fs::write(
@@ -118,7 +118,7 @@ max_age_secs = 600
 
     let limited = request(
         port,
-        "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        "GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(limited.starts_with("HTTP/1.1 429 Too Many Requests"));
 }

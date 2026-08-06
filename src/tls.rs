@@ -1,10 +1,11 @@
 //! TLS configuration for local PEM certificates and ACME-managed certificates.
 
-use std::{collections::HashMap, fs::File, io::BufReader, process::Command, sync::Arc};
+use std::{collections::HashMap, process::Command, sync::Arc};
 
 use futures_util::StreamExt;
 use rustls::{
     ServerConfig,
+    pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
     server::{ClientHello, ResolvesServerCert, ResolvesServerCertUsingSni},
     sign::CertifiedKey,
 };
@@ -171,7 +172,7 @@ fn run_lego(
         command.arg("--domains").arg(domain);
     }
     for (key, value) in credentials {
-        command.env(key, value);
+        command.env(key, value.as_str());
     }
     // `renew` avoids needless reissues on every service restart. lego performs a
     // fresh DNS-01 order only when no usable certificate is cached yet.
@@ -186,18 +187,20 @@ fn run_lego(
             dns.command.display()
         ))
     })?;
-    if !output.status.success() {
+    let status = output.status;
+    let _stdout = zeroize::Zeroizing::new(output.stdout);
+    let _stderr = zeroize::Zeroizing::new(output.stderr);
+    if !status.success() {
         return Err(Error::Config(format!(
-            "DNS-01 certificate request using {} failed: {}",
-            provider.provider,
-            String::from_utf8_lossy(&output.stderr).trim(),
+            "DNS-01 certificate request using {} failed with status {}",
+            provider.provider, status,
         )));
     }
     Ok(())
 }
 
-fn read_credentials(path: &std::path::Path) -> Result<HashMap<String, String>> {
-    let contents = std::fs::read_to_string(path)?;
+fn read_credentials(path: &std::path::Path) -> Result<HashMap<String, zeroize::Zeroizing<String>>> {
+    let contents = zeroize::Zeroizing::new(std::fs::read_to_string(path)?);
     let mut credentials = HashMap::new();
     for (line_number, line) in contents.lines().enumerate() {
         let line = line.trim();
@@ -222,7 +225,7 @@ fn read_credentials(path: &std::path::Path) -> Result<HashMap<String, String>> {
                 line_number + 1
             )));
         }
-        credentials.insert(key.to_owned(), value.to_owned());
+        credentials.insert(key.to_owned(), zeroize::Zeroizing::new(value.to_owned()));
     }
     if credentials.is_empty() {
         return Err(Error::Config(format!(
@@ -269,16 +272,19 @@ fn load_local_certificates(
     let mut hosts = std::collections::HashSet::new();
     let provider = rustls::crypto::aws_lc_rs::default_provider();
     for certificate in certificates {
-        let chain =
-            rustls_pemfile::certs(&mut BufReader::new(File::open(&certificate.certificate)?))
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|error| Error::Config(format!("invalid certificate PEM: {error}")))?;
-        let key = rustls_pemfile::private_key(&mut BufReader::new(File::open(
-            &certificate.private_key,
-        )?))?
-        .ok_or_else(|| {
+        let chain = CertificateDer::pem_file_iter(&certificate.certificate)
+            .map_err(|error| Error::Config(format!("could not read certificate PEM: {error}")))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| Error::Config(format!("invalid certificate PEM: {error}")))?;
+        if chain.is_empty() {
+            return Err(Error::Config(format!(
+                "no certificate found: {}",
+                certificate.certificate.display()
+            )));
+        }
+        let key = PrivateKeyDer::from_pem_file(&certificate.private_key).map_err(|error| {
             Error::Config(format!(
-                "no private key found: {}",
+                "invalid private key PEM {}: {error}",
                 certificate.private_key.display()
             ))
         })?;

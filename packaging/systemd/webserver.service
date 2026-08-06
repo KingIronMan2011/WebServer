@@ -32,7 +32,7 @@ LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 UMask=0027
-ReadWritePaths=/var/www/webserver /var/log/webserver /etc/webserver/certificates/acme
+ReadWritePaths=/var/www/webserver /var/log/webserver /var/lib/webserver /etc/webserver/sites /etc/webserver/certificates/acme
 
 [Install]
 WantedBy=multi-user.target

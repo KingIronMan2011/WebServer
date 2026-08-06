@@ -28,16 +28,19 @@ if ! getent passwd www-data >/dev/null 2>&1; then
 fi
 
 install -Dm755 "$binary" /usr/local/bin/webserver
-install -d -m750 -o root -g www-data /etc/webserver/sites
+install -d -m750 -o www-data -g www-data /etc/webserver/sites
 install -d -m750 -o root -g www-data /etc/webserver/certificates /etc/webserver/certificates/local
 install -d -m750 -o www-data -g www-data /etc/webserver/certificates/acme
-install -d -m750 -o www-data -g www-data /var/www/webserver /var/www/webserver/public /var/log/webserver
+install -d -m750 -o www-data -g www-data /var/www/webserver /var/www/webserver/public /var/log/webserver /var/lib/webserver
 
 if [ ! -f /etc/webserver/webserver.toml ]; then
   install -Dm640 -o root -g www-data "$script_dir/webserver.toml" /etc/webserver/webserver.toml
 fi
 if [ ! -f /etc/webserver/sites/localhost.conf ]; then
-  install -Dm640 -o root -g www-data "$script_dir/sites/localhost.conf" /etc/webserver/sites/localhost.conf
+  install -Dm640 -o www-data -g www-data "$script_dir/sites/localhost.conf" /etc/webserver/sites/localhost.conf
+fi
+if [ ! -f /var/lib/webserver/admin.db ]; then
+  install -m600 -o www-data -g www-data /dev/null /var/lib/webserver/admin.db
 fi
 if [ ! -f /var/www/webserver/public/index.html ]; then
   printf '%s\n' '<!doctype html><title>Webserver</title><h1>It works!</h1>' > /var/www/webserver/public/index.html

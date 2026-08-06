@@ -74,14 +74,6 @@ where
         ));
     }
 
-    if config.server.metrics_path.as_deref() == Some(context.path.as_str()) {
-        return Ok(with_http3_alt_svc(
-            response::plain(StatusCode::OK, crate::observability::metrics::prometheus()),
-            &config,
-            is_tls,
-        ));
-    }
-
     let client_ip = client_ip(&request, peer, &config);
     if config
         .server
@@ -104,6 +96,13 @@ where
     if !crate::server::limits::allow(client_ip, config.server.rate_limit_per_minute) {
         return Ok(with_http3_alt_svc(
             response::error(StatusCode::TOO_MANY_REQUESTS),
+            &config,
+            is_tls,
+        ));
+    }
+    if config.server.metrics_path.as_deref() == Some(context.path.as_str()) {
+        return Ok(with_http3_alt_svc(
+            response::plain(StatusCode::OK, crate::observability::metrics::prometheus()),
             &config,
             is_tls,
         ));
@@ -186,8 +185,10 @@ where
                         *max_connections_per_upstream,
                         *retries,
                         *retry_backoff_ms,
-                        peer,
+                        client_ip,
                         &context.host,
+                        is_tls,
+                        config.server.max_body_bytes,
                         config.server.upstream_timeout_secs,
                     )
                     .await
@@ -215,6 +216,7 @@ where
             apply_cors(&mut response, origin.as_deref(), cors);
         }
     }
+    apply_default_security_headers(&mut response);
     advertise_http3(&mut response, &config, is_tls);
 
     tracing::info!(%peer, %method, %path, status = response.status().as_u16(), elapsed_ms = started.elapsed().as_millis(), "request completed");
@@ -227,8 +229,16 @@ fn with_http3_alt_svc(
     config: &Config,
     is_tls: bool,
 ) -> hyper::Response<Body> {
+    apply_default_security_headers(&mut response);
     advertise_http3(&mut response, config, is_tls);
     response
+}
+
+fn apply_default_security_headers(response: &mut hyper::Response<Body>) {
+    response
+        .headers_mut()
+        .entry("x-content-type-options")
+        .or_insert(HeaderValue::from_static("nosniff"));
 }
 
 /// Announces the UDP HTTP/3 endpoint only from secure HTTP/1.1 and HTTP/2
@@ -284,7 +294,7 @@ fn apply_cors(
     {
         headers.insert("access-control-max-age", value);
     }
-    headers.insert("vary", "Origin".parse().expect("valid header"));
+    headers.append("vary", "Origin".parse().expect("valid header"));
 }
 
 fn client_ip<B>(request: &Request<B>, peer: SocketAddr, config: &Config) -> IpAddr {
@@ -296,13 +306,30 @@ fn client_ip<B>(request: &Request<B>, peer: SocketAddr, config: &Config) -> IpAd
     {
         return peer.ip();
     }
-    request
+    let mut current = peer.ip();
+    let forwarded = request
         .headers()
-        .get("x-forwarded-for")
-        .and_then(|header| header.to_str().ok())
-        .and_then(|header| header.split(',').next())
-        .and_then(|value| value.trim().parse().ok())
-        .unwrap_or(peer.ip())
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|header| header.to_str().ok())
+        .flat_map(|header| header.split(','))
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    for candidate in forwarded.into_iter().rev() {
+        if !config
+            .server
+            .trusted_proxies
+            .iter()
+            .any(|network| network.contains(&current))
+        {
+            break;
+        }
+        let Ok(candidate) = candidate.parse() else {
+            break;
+        };
+        current = candidate;
+    }
+    current
 }
 
 fn request_size_error<B>(
@@ -320,4 +347,41 @@ fn request_size_error<B>(
         }
     };
     (content_length > max_body_bytes).then(|| response::error(StatusCode::PAYLOAD_TOO_LARGE))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::client_ip;
+    use crate::config::Config;
+    use hyper::Request;
+    use std::net::{IpAddr, SocketAddr};
+
+    #[test]
+    fn trusted_proxy_uses_the_nearest_untrusted_forwarded_address() {
+        let directory =
+            std::env::temp_dir().join(format!("webserver-forwarded-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(directory.join("sites")).expect("create sites directory");
+        std::fs::write(
+            directory.join("webserver.toml"),
+            "[server]\ntrusted_proxies = [\"10.0.0.0/8\"]\n",
+        )
+        .expect("write config");
+        std::fs::write(
+            directory.join("sites/example.test.conf"),
+            "host = \"example.test\"\n[[routes]]\npath_prefix = \"/\"\nkind = \"redirect\"\nlocation = \"/\"\n",
+        )
+        .expect("write site");
+        let config = Config::load(directory.join("webserver.toml")).expect("load config");
+        let request = Request::builder()
+            .header("x-forwarded-for", "203.0.113.99, 198.51.100.7")
+            .body(())
+            .expect("request");
+        let peer: SocketAddr = "10.0.0.2:443".parse().expect("peer");
+
+        assert_eq!(
+            client_ip(&request, peer, &config),
+            "198.51.100.7".parse::<IpAddr>().unwrap()
+        );
+        let _ = std::fs::remove_dir_all(directory);
+    }
 }

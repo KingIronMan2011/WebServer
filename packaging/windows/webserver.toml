@@ -12,6 +12,9 @@ bind = "0.0.0.0:443"
 # email = "admin@example.com"
 certificate_cache = 'C:\ProgramData\Webserver\certificates\acme'
 
+[admin]
+database = 'C:\ProgramData\Webserver\data\admin.db'
+
 # [[tls.certificates]]
 # hosts = ["internal.example.com"]
 # certificate = 'C:\ProgramData\Webserver\certificates\local\internal.example.com.fullchain.pem'
