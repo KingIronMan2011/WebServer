@@ -1,0 +1,39 @@
+name: Fehler melden
+description: Hilf uns, einen reproduzierbaren Fehler zu beheben.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Sicherheitslücken bitte nicht hier veröffentlichen. Nutze stattdessen
+        die private Meldung nach SECURITY.md.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Beschreibung
+      description: Was ist passiert und was hast du erwartet?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Schritte zur Reproduktion
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Umgebung
+      description: Version, Betriebssystem und bereinigte Konfiguration.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevante Logs
+      description: Bitte keine Zugangsdaten, Tokens oder privaten Schlüssel einfügen.

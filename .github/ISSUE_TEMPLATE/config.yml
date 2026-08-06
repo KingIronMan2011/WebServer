@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Sicherheitslücke privat melden
+    url: https://github.com/KingIronMan2011/WebServer/security/advisories/new
+    about: Bitte veröffentliche Sicherheitslücken nicht als Issue.
+  - name: Support und Nutzungsfragen
+    url: https://github.com/KingIronMan2011/WebServer/blob/main/SUPPORT.md
+    about: Hinweise für Fragen zur Nutzung und Konfiguration.

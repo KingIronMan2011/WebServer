@@ -1,0 +1,13 @@
+# CODEOWNERS
+
+## Standard-Review für alle Änderungen
+
+* @KingIronMan2011
+
+## Besonders sensible Bereiche
+
+/src/admin/ @KingIronMan2011
+/src/tls.rs @KingIronMan2011
+/src/server/ @KingIronMan2011
+/packaging/ @KingIronMan2011
+/.github/ @KingIronMan2011
