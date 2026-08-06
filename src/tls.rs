@@ -328,7 +328,7 @@ mod tests {
         let certificate = certificates.join("certificate.pem");
         let private_key = certificates.join("private-key.pem");
         fs::write(&certificate, generated.cert.pem()).expect("write certificate");
-        fs::write(&private_key, generated.key_pair.serialize_pem()).expect("write private key");
+        fs::write(&private_key, generated.signing_key.serialize_pem()).expect("write private key");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

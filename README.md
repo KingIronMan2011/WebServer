@@ -70,12 +70,12 @@ Hardening sowie `CAP_NET_BIND_SERVICE` für Ports unter 1024.
 
 ## Betrieb
 
-| Aufgabe | Befehl |
-| --- | --- |
+| Aufgabe              | Befehl                                                   |
+| -------------------- | -------------------------------------------------------- |
 | Konfiguration prüfen | `webserver check --config /etc/webserver/webserver.toml` |
-| Dienst starten | `sudo systemctl start webserver` |
-| Routen neu laden | `sudo systemctl reload webserver` |
-| Logs verfolgen | `sudo journalctl -u webserver -f` |
+| Dienst starten       | `sudo systemctl start webserver`                         |
+| Routen neu laden     | `sudo systemctl reload webserver`                        |
+| Logs verfolgen       | `sudo journalctl -u webserver -f`                        |
 
 Ein Reload (`SIGHUP`) übernimmt Routen- und Serveränderungen, sofern die neue
 Konfiguration gültig ist. Änderungen an TLS-Listenern oder Zertifikaten

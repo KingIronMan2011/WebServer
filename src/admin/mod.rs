@@ -1441,7 +1441,14 @@ fn verify_password(password: &str, hash: &str) -> bool {
 }
 fn secret_hash(secret: &str) -> String {
     use sha2::{Digest, Sha256};
-    format!("{:x}", Sha256::digest(secret.as_bytes()))
+
+    let digest = Sha256::digest(secret.as_bytes());
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
 }
 fn unix_after(duration: Duration) -> i64 {
     SystemTime::now()

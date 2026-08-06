@@ -10,7 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 percent-encoding = "2"
-toml = "0.8"
+toml = "1.1"
 webserver = { path = ".." }
 
 [[bin]]

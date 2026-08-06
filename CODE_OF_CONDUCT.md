@@ -19,7 +19,7 @@ Behinderung, Religion oder persönlichen Überzeugungen.
 - Belästigung, Diskriminierung, Beleidigungen oder persönliche Angriffe.
 - Veröffentlichung privater Informationen ohne ausdrückliche Zustimmung.
 - Öffentliche Offenlegung von Sicherheitslücken, bevor eine angemessene
-Behebung möglich war.
+  Behebung möglich war.
 - Spam, absichtlich störendes Verhalten oder böswillige Beiträge.
 
 ## Durchsetzung

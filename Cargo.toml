@@ -1,6 +1,6 @@
 [package]
 name = "webserver"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2024"
 description = "A Caddy-inspired reverse proxy and web server written in Rust."
 license = "MIT"
@@ -29,9 +29,9 @@ opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
 percent-encoding = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
-sqlx-core = { version = "=0.8.6", features = ["_rt-tokio"] }
-sqlx-sqlite = { version = "=0.8.6", features = ["bundled", "uuid"] }
+sha2 = "0.11"
+sqlx-core = { version = "=0.9.0", features = ["_rt-tokio"] }
+sqlx-sqlite = { version = "=0.9.0", features = ["bundled", "uuid"] }
 thiserror = "2"
 time = "0.3"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
@@ -39,16 +39,16 @@ tokio-util = { version = "0.7", features = ["io", "rt"] }
 rustls = "0.23"
 quinn = "0.11"
 rustls-acme = { version = "0.15", features = ["tokio"] }
-socket2 = { version = "0.5", features = ["all"] }
+socket2 = { version = "0.6", features = ["all"] }
 tokio-rustls = "0.26"
-toml = "0.8"
-toml_edit = "0.22"
+toml = "1.1"
+toml_edit = "0.25"
 tracing = "0.1"
 tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tower_governor = "0.8"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["catch-panic", "request-id", "set-header", "trace"] }
+tower-http = { version = "0.7", features = ["catch-panic", "request-id", "set-header", "trace"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 zeroize = "1"
 
@@ -62,4 +62,4 @@ windows-service = "0.8"
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
-rcgen = "0.13"
+rcgen = "0.14"
