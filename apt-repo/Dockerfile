@@ -72,13 +72,20 @@ RUN --mount=type=secret,id=apt_gpg_private_key_b64,required=true \
     rm -rf "$GNUPGHOME" /tmp/webserver_*_amd64.deb
 
 FROM nginx:alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752
+
 ENV TZ=Europe/Berlin
+
 RUN apk add --no-cache tzdata
-COPY --from=repository /repo/dists /usr/share/nginx/html/dists
-COPY --from=repository /repo/pool /usr/share/nginx/html/pool
-COPY --from=repository /repo/webserver-archive-keyring.asc /usr/share/nginx/html/webserver-archive-keyring.asc
-COPY --from=repository /repo/webserver-archive-keyring.gpg /usr/share/nginx/html/webserver-archive-keyring.gpg
-COPY --from=repository /repo/LICENSE /usr/share/nginx/html/LICENSE
+
+COPY --from=repository /repo /seed
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-RUN rm -f /usr/share/nginx/html/index.html /usr/share/nginx/html/50x.html
+COPY entrypoint.sh /docker-entrypoint.d/30-seed-repository.sh
+COPY README.md /seed/README.md
+
+RUN rm -f /usr/share/nginx/html/index.html /usr/share/nginx/html/50x.html \
+    && chmod 0755 /docker-entrypoint.d/30-seed-repository.sh \
+    && mkdir -p /seed/debian /seed/rpm /seed/arch /seed/keys
+
+VOLUME ["/repo"]
+
 EXPOSE 8080
