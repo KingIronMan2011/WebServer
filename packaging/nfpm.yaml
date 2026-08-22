@@ -15,10 +15,6 @@ contents:
       mode: 0755
   - src: packaging/nfpm/webserver.service
     dst: /usr/lib/systemd/system/webserver.service
-  - src: packaging/nfpm/postinstall.sh
-    dst: /usr/share/webserver/postinstall.sh
-    file_info:
-      mode: 0755
   - src: packaging/webserver.toml
     dst: /usr/share/webserver/webserver.toml
   - src: packaging/sites/localhost.conf
