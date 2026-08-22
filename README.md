@@ -6,7 +6,7 @@ Load-Balancing, Observability und moderne HTTP-Protokolle in einem Binary.
 
 ![Lizenz: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-**Aktueller Stand: v1.0.0.** Die stabilen Verträge und Hinweise für produktive
+**Aktueller Stand: v1.1.2.** Die stabilen Verträge und Hinweise für produktive
 Upgrades stehen in [docs/UPGRADING.md](docs/UPGRADING.md).
 
 ## Inhalt
