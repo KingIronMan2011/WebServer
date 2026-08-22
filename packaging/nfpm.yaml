@@ -1,0 +1,39 @@
+name: webserver
+arch: amd64
+platform: linux
+version: VERSION_PLACEHOLDER
+release: "1"
+section: web
+priority: optional
+maintainer: KingIronMan2011
+description: A Caddy-inspired reverse proxy and web server written in Rust.
+license: MIT
+contents:
+  - src: release/package/usr/local/bin/webserver
+    dst: /usr/local/bin/webserver
+    file_info:
+      mode: 0755
+  - src: packaging/nfpm/webserver.service
+    dst: /usr/lib/systemd/system/webserver.service
+  - src: packaging/nfpm/postinstall.sh
+    dst: /usr/share/webserver/postinstall.sh
+    file_info:
+      mode: 0755
+  - src: packaging/webserver.toml
+    dst: /usr/share/webserver/webserver.toml
+  - src: packaging/sites/localhost.conf
+    dst: /usr/share/webserver/localhost.conf
+  - src: dashboard/dist/
+    dst: /usr/share/webserver/dashboard/
+scripts:
+  postinstall: packaging/nfpm/postinstall.sh
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.36)
+  rpm:
+    depends:
+      - glibc
+  archlinux:
+    depends:
+      - glibc
