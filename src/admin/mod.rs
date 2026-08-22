@@ -920,7 +920,7 @@ async fn create_site(
 ) -> axum::response::Response {
     let principal = match write_principal(&state.database, &jar, &headers).await {
         Ok(principal) => principal,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let mut active = state.config.write().await;
     let mut config = active.clone();
@@ -986,7 +986,7 @@ async fn create_route(
 ) -> axum::response::Response {
     let principal = match write_principal(&state.database, &jar, &headers).await {
         Ok(principal) => principal,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let mut active = state.config.write().await;
     let mut config = active.clone();
@@ -1021,7 +1021,7 @@ async fn delete_route(
 ) -> axum::response::Response {
     let principal = match write_principal(&state.database, &jar, &headers).await {
         Ok(principal) => principal,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let mut active = state.config.write().await;
     let mut config = active.clone();
@@ -1162,7 +1162,7 @@ async fn delete_site(
 ) -> axum::response::Response {
     let principal = match write_principal(&state.database, &jar, &headers).await {
         Ok(principal) => principal,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let mut config = state.config.write().await;
     if let Err(error) = crate::management::remove_site(&mut config, &host) {
@@ -1540,20 +1540,20 @@ async fn write_principal(
     database: &SqlitePool,
     jar: &CookieJar,
     headers: &HeaderMap,
-) -> std::result::Result<Principal, axum::response::Response> {
+) -> std::result::Result<Principal, Box<axum::response::Response>> {
     let Some(principal) = authenticated_principal(database, jar, headers).await else {
-        return Err(ApiError::response(
+        return Err(Box::new(ApiError::response(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
             "authentication required",
-        ));
+        )));
     };
     if !principal.role.can_write() {
-        return Err(ApiError::response(
+        return Err(Box::new(ApiError::response(
             StatusCode::FORBIDDEN,
             "forbidden",
             "role cannot modify configuration",
-        ));
+        )));
     }
     Ok(principal)
 }
