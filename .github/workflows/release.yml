@@ -208,7 +208,7 @@ jobs:
           ]
           EOF
       - name: Publish Linux packages to repo.kingironman.dev
-        uses: KingIronMan2011/linux-repo@23c27b57cd927b22418159aeffbf296f78608c38
+        uses: KingIronMan2011/linux-repo@aee2801bb12f77580a728321d14b1206e424ce39
         with:
           token: ${{ secrets.LINUX_REPO_PUBLISH_TOKEN }}
           manifest: release-assets/linux-repo-manifest.json
