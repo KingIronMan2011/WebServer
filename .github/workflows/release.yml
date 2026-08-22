@@ -208,38 +208,10 @@ jobs:
           ]
           EOF
       - name: Publish Linux packages to repo.kingironman.dev
-        env:
-          PUBLISH_TOKEN: ${{ secrets.LINUX_REPO_PUBLISH_TOKEN }}
-          MANIFEST: release-assets/linux-repo-manifest.json
-        run: |
-          set -euo pipefail
-          test -n "$PUBLISH_TOKEN"
-          test -f "$MANIFEST"
-          jq -e 'type == "array" and length > 0' "$MANIFEST" >/dev/null
-          while IFS= read -r item; do
-            format="$(jq -r '.format' <<<"$item")"
-            package="$(jq -r '.package' <<<"$item")"
-            endpoint="https://repo.kingironman.dev/api/v1/packages/${format}"
-            test -f "$package"
-            case "$format" in
-              debian) query="" ;;
-              rpm)
-                release="$(jq -r '.release // empty' <<<"$item")"
-                arch="$(jq -r '.arch // empty' <<<"$item")"
-                test -n "$release" && test -n "$arch"
-                query="?release=${release}&arch=${arch}"
-                ;;
-              arch)
-                arch="$(jq -r '.arch // empty' <<<"$item")"
-                test -n "$arch"
-                query="?arch=${arch}"
-                ;;
-              *) echo "format must be debian, rpm, or arch" >&2; exit 2 ;;
-            esac
-            curl -fsS --fail-with-body -X POST "${endpoint}${query}" \
-              -H "Authorization: Bearer ${PUBLISH_TOKEN}" \
-              -F "package=@${package}"
-          done < <(jq -c '.[]' "$MANIFEST")
+        uses: KingIronMan2011/linux-repo@23c27b57cd927b22418159aeffbf296f78608c38
+        with:
+          token: ${{ secrets.LINUX_REPO_PUBLISH_TOKEN }}
+          manifest: release-assets/linux-repo-manifest.json
       - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           tag_name: ${{ needs.check_release.outputs.tag }}
