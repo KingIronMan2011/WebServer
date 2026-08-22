@@ -20,7 +20,8 @@ contents:
   - src: packaging/sites/localhost.conf
     dst: /usr/share/webserver/localhost.conf
   - src: dashboard/dist/
-    dst: /usr/share/webserver/dashboard/
+    dst: /usr/share/webserver/dashboard
+    type: tree
 scripts:
   postinstall: packaging/nfpm/postinstall.sh
 overrides:
